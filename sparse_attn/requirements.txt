@@ -1,0 +1,35 @@
+# Dependencies for the sparse / linear attention benchmarks.
+#
+# See README.md section "Environment" for the recommended install flow
+# (a dedicated .venv in LLMDiveDeep/, then the source-only pieces below).
+#
+# --- pip-installable core -------------------------------------------------
+# Install a CUDA build of torch matching your CUDA toolkit; the versions we
+# validated against are torch 2.11.0+cu130 / triton 3.6.0 on CUDA 13.
+torch>=2.6            # CUDA-enabled build
+triton>=3.0          # block-sparse FA (PART B/D/E) and GDN (PART F)
+numpy
+
+# --- source-only pieces (NOT on PyPI) -------------------------------------
+# These do not `pip install` cleanly from PyPI; build them from source. See
+# README.md for exact commands.
+#
+#   sglang            open source: https://github.com/sgl-project/sglang.git
+#                     pin release tag v0.5.15.post1 (DSA / GLM-5.2 / GDN /
+#                     DSv4 sparse support). Provides:
+#                       - sglang.srt.layers.attention.dsa.dsa_indexer (PART C, modules)
+#                       - sglang.srt.layers.attention.fla.chunk       (PART F, GDN)
+#                       - sglang.jit_kernel.flash_attention_v4        (FA4 fallback)
+#
+#   deep_gemm         ships with sglang's build; provides fp8_mqa_logits used
+#                     by the lightning indexer (PART C, module bench). A torch
+#                     FP32 fallback runs if missing (~50x slower).
+#
+#   flash-attn (cute) FA4 via the CuTe DSL: `from flash_attn.cute import
+#                     flash_attn_func`. Dense baseline for PART A/B/D/E/F.
+#
+#   block-sparse kernel  the Triton block-sparse FA used as the LM
+#                     sparse-attention step (PART B/D/E) currently lives in an
+#                     internal `b10_kernels/sparse_attn/video_sparse_kernel.py`
+#                     path (not yet upstream). Point SGLANG_B10_KERNELS_DIR at
+#                     the directory that contains `sparse_attn/`.
