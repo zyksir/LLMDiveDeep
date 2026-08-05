@@ -439,9 +439,14 @@ class TunedAllGather:
     capture; replays then always dispatch the winning launch."""
 
     def __init__(self, comms: list[OneShotComm],
-                 ces: list[CeComm] | None = None):
+                 ces: list[CeComm] | None = None,
+                 comms_fp8: list[OneShotComm] | None = None):
         self.comms = comms
         self.ces = ces or []
+        # fp8-WIRE instances (0xFF sentinel): candidates for the
+        # sender-side-quantized AG (half the wire bytes - matters once
+        # the message leaves the latency-bound regime, B>=~32)
+        self.comms_fp8 = comms_fp8 or []
         self.world = comms[0].world
         self._plans: dict[tuple, tuple] = {}
 
@@ -474,13 +479,22 @@ class TunedAllGather:
         key = ("q",) + tuple(x.shape)
         plan = self._plans.get(key)
         if plan is None:
-            plan = self._tune_plans(
-                key, [("oneshot", ci, blk)
-                      for ci in range(len(self.comms))
-                      for blk in (256, 512)],
-                lambda p: self.comms[p[1]].all_gather_mxfp8(
-                    x, block=p[2]))
-        return self.comms[plan[1]].all_gather_mxfp8(x, block=plan[2])
+            plans = [("oneshot", ci, blk)
+                     for ci in range(len(self.comms))
+                     for blk in (256, 512)]
+            # sender-side quantize (fp8 wire, half the bytes): a real
+            # candidate at large B where payload time matters
+            plans += [("qpush", ci, blk)
+                      for ci in range(len(self.comms_fp8))
+                      for blk in (256, 512)]
+            plan = self._tune_plans(key, plans, lambda p: self._run_q(p, x))
+        return self._run_q(plan, x)
+
+    def _run_q(self, plan, x):
+        kind, ci, blk = plan
+        if kind == "qpush":
+            return self.comms_fp8[ci].all_gather_mxfp8_push(x, block=blk)
+        return self.comms[ci].all_gather_mxfp8(x, block=blk)
 
     def tune(self, x: torch.Tensor, *, iters: int = 30) -> tuple:
         key = tuple(x.shape)
@@ -728,10 +742,18 @@ def build_fc1_ag(rank: int, world: int, batch: int,
         comms.append(
             OneShotComm(rank, world, max_bytes=max_bytes, grid=32)
         )
+    # fp8-WIRE instances for the sender-side-quantized AG (dedicated:
+    # 0xFF sentinel is incompatible with the bf16-wire methods). Half
+    # the wire bytes - autotune decides per shape where it pays.
+    comms_fp8 = [OneShotComm(rank, world, max_bytes=max_bytes,
+                             grid=8, wire="fp8")]
+    if batch >= 8:
+        comms_fp8.append(OneShotComm(rank, world, max_bytes=max_bytes,
+                                     grid=32, wire="fp8"))
     # copy-engine candidate (SM-free; wins past the Lamport clear-cost
     # crossover and whenever the caller wants compute overlap)
     ces = [CeComm(rank, world, max_bytes=max_bytes)]
-    return TunedAllGather(comms, ces)
+    return TunedAllGather(comms, ces, comms_fp8=comms_fp8)
 
 
 def build_latent_rs(rank: int, world: int, batch: int,

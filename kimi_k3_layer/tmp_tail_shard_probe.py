@@ -33,7 +33,7 @@ from kimi_k3_layer.tmp_rs_norm_probe import bench_graph  # noqa: E402
 LATENT = 3584
 HIDDEN = 7168
 RMS_EPS = 1e-6
-MAX_B = 64
+MAX_B = 80
 
 
 def main():
@@ -77,7 +77,7 @@ def main():
               f"{'B:row+AR':>9} "
               f"{'B2:row+scale':>13} {'errA':>9} {'errB':>9} "
               f"{'errB2':>9}  (us, graph replay, max over ranks)")
-    for b in (1, 2, 4, 8, 16, 32, 64):
+    for b in (1, 2, 4, 8, 16, 32, 64, 80):
         torch.manual_seed(100 + rank)  # per-rank partials
         x = torch.randn(b, LATENT, device="cuda",
                         dtype=torch.bfloat16)

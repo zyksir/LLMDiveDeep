@@ -123,6 +123,22 @@ checkpoint's quantization ignore-list explicitly excludes
 GEMM would break production faithfulness. The ~100 MB shared weight
 read is a hard cost; overlap is the only legal mitigation.
 
+**Size focus changed (Aug 5): B = 1..80, especially 32 and 64.** At
+those sizes the messages leave the latency-bound regime (fc1-shard AG
+at B=64 moves 56 KB, the latent AR 448 KB), so wire bytes start to
+matter and two earlier decisions must be re-measured: (a) the
+fc1-shard gate (`FC1_SHARD_MAX_TOKENS=16` was tuned for the B<=16
+focus - the sender-side-quantized AG `ag_qpush` (fp8 wire, HALF the
+bytes of bf16 transport) is now an autotune candidate inside
+`TunedAllGather.all_gather_mxfp8`, which may move the crossover up);
+(b) the ref-tail upper end (probe says REF wins through 64, but the
+e2e run must confirm the aux-stream shared AR stays hidden under the
+longer expert window). Runs 4a/4b of the script below produce exactly
+this comparison. NOTE: `ag_qpush` bit-exactness vs the receiver-side
+fused AG is asserted by the bench's err columns in run 4a - if that
+column blows up only when the tuner picks qpush, suspect the fp8-wire
+kernel, not the shard.
+
 **Pending validation (run on an idle 8-GPU node):**
 
 ```bash
@@ -133,10 +149,12 @@ docker exec trt-dev bash -c "cd /workspace/diffusion_inference/LLMDiveDeep && \
 Produces, in order: (1) the fair crossover probe, (2) the tail-shard
 strategy probe, (3) e2e crossover extremes (ref tail ALWAYS vs NEVER
 - confirms the aux-stream shared AR does not perturb the expert
-kernels in-pipeline, and fixes REF_TAIL_MIN_TOKENS), (4) base-vs-opt
-traces at B=1,2,4,8,16 (`results/*.trace.json`), (5) the full
-ablation LAST so `results/bench_moe_kimi_k3_tp8.{csv,md,png}` are
-regenerated from the newest code. Old results/traces were deleted -
+kernels in-pipeline, and fixes REF_TAIL_MIN_TOKENS), (4) fc1 shard
+forced ALWAYS vs NEVER at B=16..80 with qpush in the AG autotune
+(re-decides FC1_SHARD_MAX_TOKENS for the new size focus), (5)
+base-vs-opt traces at B=1,8,16,32,64 (`results/*.trace.json`), (6)
+the full ablation LAST so `results/bench_moe_kimi_k3_tp8.{csv,md,png}`
+are regenerated from the newest code. Old results/traces were deleted -
 anything present was produced by the current code. To read the
 traces: opt should show the merged [gate|fc1-shard] GEMM + AG(+quant)
 input stage, the shared chain + its AR on the aux stream with no
