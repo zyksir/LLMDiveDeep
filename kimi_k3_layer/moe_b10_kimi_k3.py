@@ -2,68 +2,48 @@
 
 ``KimiK3MoEB10(KimiK3MoE)`` keeps the baseline weights and semantics
 (moe_trtllm_kimi_k3.py) and swaps the decode forward for an optimized
-pipeline. EVERY optimization has its own switch so the bench can
-ablate them one at a time (``bench_moe_kimi_k3.py --ablate``):
+pipeline. THE DEFAULTS ARE THE SHIPPED CONFIG (no env vars needed;
+validated Aug 5, see moe_optimization.md): every switch below exists
+so ``bench_moe_kimi_k3.py --ablate`` can knock optimizations out one
+at a time, not because callers should tune them.
 
-merged_gemm (default on)
-    gate + fc1 leave as ONE input GEMM over the concatenated weights
-    (saving a GEMM launch and exposing the logits as a bf16 strided
-    slice for the routing kernel). With overlap_shared OFF the shared
-    gate/up rows are merged in too and a single Triton pass
-    (`_split_gf_kernel`) copies the latent out and computes the shared
-    SwiGLU.
+The decode pipeline the defaults produce (B <= OPT_MAX_TOKENS):
 
-overlap_shared (default on)
-    the shared-expert chain (gate/up GEMM -> SwiGLU -> down GEMM)
-    depends only on h, so it runs on an AUX STREAM and hides under the
-    routed path's AG + routing + experts + RS (the same fork/join the
-    TRT baseline does via maybe_execute_in_parallel, which the fully
-    serialized fused pipeline had given up). The tail then starts from
-    the aux stream's shared_out and accumulates fc2 into it.
+  ONE wide input GEMM [gate | fc1-shard | shared g/u]  (merge3)
+    -> Triton routing top-16, run_moe format          (routing=ours)
+    -> one-shot AG rebuilding the latent WITH the MXFP8 quantize
+       fused on its write-out                         (fc1_shard<=16)
+    -> production trtllm-gen expert kernels (untouched)
+    -> shared SiTU+down chain + its AR on an aux stream (overlap)
+    tail, B < 16:  fi fused AR+RMSNorm -> per-rank fc2 column slice
+                   addmm'd into the shared partial -> fi AR (comm=fi)
+    tail, B >= 16: fused finalize+AR+RMSNorm (ONE flashinfer kernel,
+                   experts run unfinalized)           (ref_tail+fin_fuse)
+                   -> FULL fc2 via the CuTeDSLGen tail GEMM
+                   (tail_gemm_cutedsl, B10_TAIL_KERNEL=0 disables);
+                   no output collective needed.
 
-routing = "ours" | "noaux" (default ours)
-    ours: Triton per-token top-16 (routing_kimi_k3) storing the
-    CUTLASS fused_moe input format DIRECTLY (no cast kernels).
-    noaux: torch.ops.trtllm.noaux_tc_op on the same logits slice +
-    the values.float() cast it requires. ~3 us apart at decode sizes;
-    see routing_kimi_k3.py for the honest roofline.
+Ablation switches (set_opt_flags) and their measured verdicts:
+  merged_gemm / merge3   on; one wide GEMM (narrow-N cuBLAS runs at
+                         ~2 TB/s, wide at ~8 - fold everything in)
+  routing                "ours" (Triton) | "noaux" (TRT op)
+  fc1_shard              on to B<=16 (B10_FC1_SHARD_MAX_TOKENS)
+  fc2_shard              the B<16 tail's column shard (<=64)
+  comm                   "fi" (default; won at every size once merge3
+                         freed the aux stream) | "custom" (Lamport
+                         RS+norm - kept for re-tuning on other nodes;
+                         the fused AG is NOT gated by this)
+  overlap_shared         on to B<=64
+  ref_tail + fin_fuse    the B>=16 tail (B10_REF_TAIL_MIN_TOKENS)
+  prefill_opt            tokens >= 192: sharded fc1/fc2 + CE all-gather
+  skip_shared            TIMING PROBE only (output wrong)
+  rs_defer               retired (loses at decode sizes; default off)
 
-fc1_shard (default on, decode only)
-    fc1 is COLUMN-sharded across TP: each rank computes [B, 3584/tp]
-    of the latent from the merged GEMM, then a one-shot Lamport
-    all-gather (comm.py) rebuilds the full latent every rank needs for
-    EP expert dispatch. Cuts this rank's fc1 read from 3584x7168 to
-    448x7168 weights (~6 us of HBM at decode) for an AG that costs
-    ~4-5 us and grows with tokens - decode-regime only
-    (FC1_SHARD_MAX_TOKENS, re-measured by the ablation).
-
-comm = "custom" | "fi" (default custom)
-    custom: one-shot column reduce-scatter with the latent RMSNorm
-    fused in-kernel (each rank only ever needs its fc2 column slice
-    of the reduced latent - world x less wire than an AR), plus the
-    one-shot AG above; final 7168-wide AR stays flashinfer.
-    fi: flashinfer fused oneshot AR+norm everywhere (no AG/RS).
-
-Always-on structural pieces (not switchable, they define the b10
-pipeline): expert GEMMs run torch.ops.trtllm.fused_moe - the SAME
-CUTLASS kernels the baseline backend calls - with our precomputed
-routing; fc2 is column-sharded with the shared-expert down GEMM
-accumulated into it via cuBLAS beta=1 (`addmm_`), so the tail is two
-GEMMs and no cat/add kernels.
-
-prefill_opt (default on, batch >= PREFILL_MIN_TOKENS)
-    prefill-scale path: fc1 AND fc2 column-sharded (1/world of the
-    baseline's replicated latent-GEMM FLOPs - a real compute cut at
-    these sizes), with the latent rebuild as a COPY-ENGINE all-gather
-    (CeComm) on a high-priority side stream: zero SMs, hidden under
-    the gate GEMM + routing + shared-expert chain. Comm otherwise
-    follows the baseline (TRT AUTO allreduce; the Lamport kernels
-    price out past ~1k tokens).
-
-Between OPT_MAX_TOKENS and PREFILL_MIN_TOKENS (or before init_opt)
-forward falls back to the exact baseline: builtin cooperative routing
-+ trtllm AllReduce win there and the CE AG's latency floor cannot
-hide yet.
+Node warning: every crossover above was re-measured on the
+model-performance box and several DIFFER from the previous node -
+re-run --ablate after moving hardware. Falls back to the exact
+baseline forward between OPT_MAX_TOKENS and PREFILL_MIN_TOKENS or
+before init_opt.
 """
 
 from __future__ import annotations
@@ -84,7 +64,11 @@ from .config import (
     TOP_K,
 )
 from .moe_trtllm_kimi_k3 import KimiK3MoE
-from .routing_kimi_k3 import route_for_fused_moe, route_for_trtllm_gen
+from .routing_kimi_k3 import (
+    route_for_fused_moe,
+    route_for_trtllm_gen,
+    route_pack,
+)
 
 # fc1 column-shard pays a ~flat ~6 us of saved weight read against an
 # AG that grows ~linearly in tokens (7 KB/token) - decode regime only.
@@ -123,14 +107,12 @@ RS_DEFER_MIN_TOKENS = int(
     os.environ.get("B10_RS_DEFER_MIN_TOKENS", "1000000"))
 
 # REF-overlap tail crossover: from here up, drop the fc2 shard and use
-# AR+norm(latent) -> FULL fc2 (output identical on every rank -> NO
-# output collective) with the shared-expert AR(hidden) split onto the
-# aux stream, overlapped under the latent chain. Clean fair probe
-# (tmp_tail_ref_overlap.py, AR+shard vs REF+overlap, us):
-#   B=1: 22.5 vs 24.1 | B=2: 22.6 vs 23.2 | B=4: 22.8 vs 22.2
-#   B=8: 25.3 vs 20.9 | B=16: 30.5 vs 24.2 | B=64: 44.2 vs 40.7
-# -> shard tail only holds at B<=2 (by <2 us); REF wins from B=4 up.
-REF_TAIL_MIN_TOKENS = int(os.environ.get("B10_REF_TAIL_MIN_TOKENS", "4"))
+# finalize+AR+norm (fin_fuse) -> FULL fc2 (output identical on every
+# rank -> NO output collective) with the shared-expert AR(hidden) on
+# the aux stream. NODE-DEPENDENT: the old node's probe put this at
+# B>=4; on the model-performance box the shard tail wins through B=8
+# under multi-input averaging (c8 ablation) -> default 16.
+REF_TAIL_MIN_TOKENS = int(os.environ.get("B10_REF_TAIL_MIN_TOKENS", "16"))
 
 # trtllm-gen input-stage crossover: below this, ONE merged [gate|fc1]
 # GEMM (single weight pass, shared chain forks immediately) wins; from
@@ -307,12 +289,60 @@ class KimiK3MoEB10(KimiK3MoE):
             from tensorrt_llm._torch.modules.fused_moe.moe_op_backend \
                 import get_op_backend
             self._native_op_backend = get_op_backend("trtllm")
+            # fin_fuse direct routed call: our routing kernel already
+            # emits the (id<<16)|bf16(w) packed tensor the flashinfer
+            # routed op consumes, so calling it DIRECTLY skips the op
+            # wrapper's two elementwise pack kernels (~4 us at B=16).
+            # Arg marshaling mirrors run_moe's w4a8_mxfp4_mxfp8 branch
+            # + the wrapper's routed dispatch, frozen once here.
+            rp = backend._extract_routing_params()
+            fi_ob = backend.op_backend  # production flashinfer op
+            self._fi_moe = fi_ob._fused_moe
+            self._fi_routed_args = (
+                backend.w3_w1_weight,
+                backend.w3_w1_weight_scale.view(torch.float8_e4m3fn),
+                backend.w3_w1_bias if backend.bias else None,
+                backend.swiglu_alpha,
+                backend.swiglu_beta,
+                backend.swiglu_limit,
+                backend.w2_weight,
+                backend.w2_weight_scale.view(torch.float8_e4m3fn),
+                backend.w2_bias if backend.bias else None,
+                backend._get_data_or_none("fc31_scale_c"),
+                backend._get_data_or_none("fc31_alpha"),
+                backend._get_data_or_none("fc2_alpha"),
+                backend.num_slots,
+                TOP_K,
+                rp.n_group,
+                rp.topk_group,
+                backend.w3_w1_weight.shape[-2] // 2,  # padded inter
+                backend.slot_start,
+                backend.expert_size_per_partition,
+                rp.routed_scaling_factor,
+                fi_ob.cvt_routing_method_type(
+                    backend.routing_method.routing_method_type),
+            )
+            self._fi_act_type = fi_ob.cvt_activation_type(
+                backend._to_trtllm_gen_activation_type(
+                    backend.activation_type))
+            self._fi_tune_max = backend.max_num_tokens
         else:
             self._w31, self._w2 = self._expert_weights()
         # shared activation must match the baseline module's: SiTU in
         # production (trtllm) mode, SwiGLU in the cutlass bench mode
         self._shared_act_mod = (
             self.shared_experts.activation if self._trtllm_gen else None)
+
+        # CuTeDSLGen tail GEMM (D = C + A @ fc2.T at ~6.3 TB/s vs
+        # cuBLAS ~4.6 on this shape; vendored, graph-safe). Env-gated
+        # so the ablation can isolate it: B10_TAIL_KERNEL=0 disables.
+        self._tail_kernel = None
+        if os.environ.get("B10_TAIL_KERNEL", "1") != "0":
+            try:
+                from .tail_gemm_cutedsl import moe_tail_gemm
+                self._tail_kernel = moe_tail_gemm
+            except Exception:  # noqa: BLE001 - cutedsl unavailable
+                self._tail_kernel = None
 
         self.register_buffer(
             "_tail_in",
@@ -334,12 +364,14 @@ class KimiK3MoEB10(KimiK3MoE):
         routing: str = "ours",
         fc1_shard: bool = True,
         fc2_shard: bool = True,
-        comm: str = "custom",
+        comm: str = "fi",
         overlap_shared: bool = True,
         prefill_opt: bool = True,
         skip_shared: bool = False,
         rs_defer: bool = True,
         ref_tail: bool = True,
+        fin_fuse: bool = True,
+        merge3: bool = True,
     ) -> None:
         """Flip individual optimizations (between graph captures).
 
@@ -359,7 +391,13 @@ class KimiK3MoEB10(KimiK3MoE):
         fc2-shard tail (RS+norm -> 1/world fc2 -> AR(hidden)) with
         AR+norm(latent) -> FULL fc2 - identical output on every rank,
         so NO output collective - while the shared partial's
-        AR(hidden) runs on the aux stream, overlapped."""
+        AR(hidden) runs on the aux stream, overlapped.
+
+        fin_fuse (needs ref_tail + trtllm-gen + routing "ours"): run
+        the experts UNFINALIZED (do_finalize=False via the flashinfer
+        routed op) and replace finalizeKernel + AR + RMSNorm with ONE
+        flashinfer trtllm_moe_finalize_allreduce_fusion kernel - the
+        gather/scale of the expert partials rides the latent AR."""
         assert routing in ("ours", "noaux") and comm in ("custom", "fi")
         self._flag_merged = merged_gemm
         self._flag_routing = routing
@@ -371,6 +409,8 @@ class KimiK3MoEB10(KimiK3MoE):
         self._flag_skip_shared = skip_shared
         self._flag_rs_defer = rs_defer
         self._flag_ref_tail = ref_tail
+        self._flag_fin_fuse = fin_fuse
+        self._flag_merge3 = merge3
 
     def _expert_weights(self) -> tuple[torch.Tensor, torch.Tensor]:
         """Local [E_l, 2I, latent] gated fc1 + [E_l, latent, I] fc2 from
@@ -401,9 +441,32 @@ class KimiK3MoEB10(KimiK3MoE):
 
         return silu_and_mul(gate_up)
 
+    def _run_moe_unfinalized(self, x, packed, x_sf):
+        """Expert bmms UNFINALIZED (do_finalize=False, no finalize
+        kernel) via the flashinfer routed op called DIRECTLY with our
+        routing kernel's packed (id<<16)|bf16(w) tensor - skipping the
+        op wrapper's two elementwise pack kernels. (The native mxfp4
+        runner has no do_finalize knob, hence flashinfer here.)
+        Returns [gemm2_output, expert_weights,
+        expanded_idx_to_permuted_idx] for moe_finalize_norm_reduce."""
+        if x_sf is not None:
+            if x_sf.dim() == 1:
+                x_sf = x_sf.view(x.shape[0], -1)
+            x_sf = x_sf.view(torch.float8_e4m3fn)
+        out = self._fi_moe.trtllm_fp4_block_scale_routed_moe(
+            packed, None, x, x_sf,
+            *self._fi_routed_args,
+            do_finalize=False,
+            activation_type=self._fi_act_type,
+            tune_max_num_tokens=self._fi_tune_max,
+        )
+        if out[2].dim() != 2:
+            out[2] = out[2].view(-1, TOP_K)
+        return out
+
     def _experts_trtllm_gen(
         self, latent: torch.Tensor, logits: torch.Tensor, batch: int,
-        after_routing=None,
+        after_routing=None, unfinalized: bool = False,
     ) -> torch.Tensor:
         """Production trtllm-gen experts. With routing "ours": our
         Triton kernel reads the bf16 strided logits slice in place and
@@ -416,12 +479,18 @@ class KimiK3MoEB10(KimiK3MoE):
         chain (see SHARED_FORK_EXPERTS_MIN_TOKENS)."""
         if self._flag_routing == "ours":
             with torch.profiler.record_function("moe.routing"):
-                ids, scales = route_for_trtllm_gen(
-                    logits, self._gate_bias_f32)
+                # unfinalized: the routed op takes our packed
+                # (id<<16)|bf16(w) tensor directly - no pack kernels
+                ids, scales = (
+                    route_pack(logits, self._gate_bias_f32)
+                    if unfinalized
+                    else route_for_trtllm_gen(logits, self._gate_bias_f32))
             if after_routing is not None:
                 after_routing()
             x, x_sf = self._quant_latent(latent)
             with torch.profiler.record_function("moe.experts"):
+                if unfinalized:
+                    return self._run_moe_unfinalized(x, ids, x_sf)
                 return self._run_moe_native(x, ids, scales, x_sf)
         if after_routing is not None:
             after_routing()  # in-kernel routing: fork before experts
@@ -599,15 +668,27 @@ class KimiK3MoEB10(KimiK3MoE):
                     gf[:, NUM_EXPERTS:NUM_EXPERTS + self._latent_width])
         self._pf_join.record(self._pf_stream)
 
+        # collective/compute pairing (both shard collectives hidden):
+        # the SHARED-EXPERT chain runs on the aux stream, forked HERE
+        # so it can slide into whichever stall window exists - the CE
+        # all-gather wait at small S (gate+routing alone don't cover
+        # the AG's ~50 us floor below ~1k tokens) or the latent
+        # allreduce's wire time at large S. The main stream never
+        # waits on it until the fc2 addmm.
+        self._evt_fork.record(cur)
+        self._evt_fork.wait(self._aux_stream)
+        shared_ref = {}
+        with torch.cuda.stream(self._aux_stream):
+            with torch.profiler.record_function("moe.pf_shared_aux"):
+                act = self._shared_act(h @ self._shared_gate_up.T)
+                shared_ref["out"] = act @ self._tail_w_shared.T
+        self._evt_join.record(self._aux_stream)
+
         # independent compute while the DMA flies
         selected = scales = None
         if not self._trtllm_gen:
             with torch.profiler.record_function("moe.pf_routing"):
                 selected, scales = self._routing_opt(logits)
-
-        with torch.profiler.record_function("moe.pf_shared"):
-            act = self._shared_act(h @ self._shared_gate_up.T)
-            shared_out = act @ self._tail_w_shared.T  # [B, H] partial
 
         self._pf_join.wait(cur)
         with torch.profiler.record_function("moe.pf_experts"):
@@ -624,6 +705,8 @@ class KimiK3MoEB10(KimiK3MoE):
         with torch.profiler.record_function("moe.pf_ar_latent"):
             reduced = self.allreduce(routed)
         reduced = _rmsnorm(reduced, self._norm_w)
+        self._evt_join.wait(cur)
+        shared_out = shared_ref["out"]
         width = self._latent_width
         cols = slice(self._rank * width, (self._rank + 1) * width)
         with torch.profiler.record_function("moe.pf_tail_fc2"):
@@ -677,6 +760,18 @@ class KimiK3MoEB10(KimiK3MoE):
             and self._fi_ar_sh is not None
             and batch >= REF_TAIL_MIN_TOKENS
         )
+        # expert-finalize fusion: run the experts UNFINALIZED and fold
+        # the gather+scale into the tail collective - the flashinfer
+        # finalize+AR+norm kernel on the ref tail, or our RS+norm
+        # kernel's push stage on the fc2-shard tail. Needs our
+        # precomputed routing (run_moe(do_finalize=False) handoff).
+        # NOTE: a shard-tail variant (finalize gathered inside the RS
+        # push, reduce_scatter_cols_finalize) measured ~6 us SLOWER at
+        # B<=8 - the 16-way gather serializes on the one-CTA-per-token
+        # push loop - so fin_fuse stays ref-tail-only.
+        fin_fuse = (ref_tail and self._flag_fin_fuse
+                    and self._trtllm_gen
+                    and self._flag_routing == "ours")
 
         # shared-expert chain on the aux stream: it depends only on h,
         # so its two GEMMs + activation hide under the routed path's
@@ -689,13 +784,25 @@ class KimiK3MoEB10(KimiK3MoE):
                            and self._flag_merged
                            and batch >= ROUTED_SPLIT_MIN_TOKENS)
 
-        def _fork_shared():
+        # merge3: fold the shared gate/up rows into the ONE input GEMM
+        # ([gate | fc1-shard | g | u], ~41 MB) - cuBLAS runs the wide-N
+        # read at 7-8 TB/s where the narrow [gate|fc1-shard] merge only
+        # reaches ~2 TB/s, and the aux chain shrinks to SiTU + down
+        # GEMM (+AR), so the shared weight read stops competing with
+        # the routed path for DRAM. The aux chain reads the g/u slice
+        # of gf (SiTUAndMul makes it contiguous itself).
+        merge3 = (self._flag_merge3 and overlap and self._trtllm_gen
+                  and self._flag_merged and not routed_pipeline
+                  and world > 1)
+
+        def _fork_shared(gu=None):
             nonlocal shared_out
             self._evt_fork.record(cur)
             self._evt_fork.wait(self._aux_stream)
             with torch.cuda.stream(self._aux_stream):
                 with torch.profiler.record_function("moe.shared_aux"):
-                    act = self._shared_act(h @ self._shared_gate_up.T)
+                    act = self._shared_act(
+                        h @ self._shared_gate_up.T if gu is None else gu)
                     shared_out = act @ self._tail_w_shared.T
                 if ref_tail:
                     # chain the shared AR right here on the aux
@@ -724,6 +831,7 @@ class KimiK3MoEB10(KimiK3MoE):
             _fork_shared()
 
         ids = scales = None  # set by the routed trtllm-gen pipeline
+        gu3 = None  # merge3's shared g/u slice (merged branch only)
         if routed_pipeline:
             # Routed input pipeline (production experts): small gate
             # GEMM, then our routing kernel in a CLEAN window, then
@@ -739,8 +847,10 @@ class KimiK3MoEB10(KimiK3MoE):
             with torch.profiler.record_function("moe.gate_gemm"):
                 logits = h @ self._gate_w.T
             with torch.profiler.record_function("moe.routing"):
-                ids, scales = route_for_trtllm_gen(
-                    logits, self._gate_bias_f32)
+                ids, scales = (
+                    route_pack(logits, self._gate_bias_f32)
+                    if fin_fuse
+                    else route_for_trtllm_gen(logits, self._gate_bias_f32))
             if overlap:
                 _fork_shared()
             with torch.profiler.record_function("moe.fc1_gemm"):
@@ -753,13 +863,15 @@ class KimiK3MoEB10(KimiK3MoE):
         elif self._flag_merged:
             # ONE input GEMM for gate + fc1 (+shard); the shared g/u
             # rows are only merged in when _split_gf handles them
-            if merge_shared:
+            if merge_shared or merge3:
                 w = self._fused_in_w_sh if fc1_sharded else self._fused_in_w
             else:
                 w = self._fused_gf_w_sh if fc1_sharded else self._fused_gf_w
             with torch.profiler.record_function("moe.fused_in_gemm"):
                 gf = h @ w.T
             logits = gf[:, :NUM_EXPERTS]
+            lat_w = self._latent_width if fc1_sharded else MOE_LATENT
+            gu3 = gf[:, NUM_EXPERTS + lat_w:] if merge3 else None
             if fc1_sharded:
                 with torch.profiler.record_function("moe.fc1_allgather"):
                     e0 = NUM_EXPERTS
@@ -777,7 +889,7 @@ class KimiK3MoEB10(KimiK3MoE):
                 # input unconditionally (even at pad 0), which also
                 # makes it contiguous - a .contiguous() here would
                 # copy the same [B, latent] twice
-                latent = gf[:, NUM_EXPERTS:]
+                latent = gf[:, NUM_EXPERTS:NUM_EXPERTS + lat_w]
             else:
                 with torch.profiler.record_function("moe.latent_copy"):
                     latent = gf[:, NUM_EXPERTS:].contiguous()
@@ -806,11 +918,16 @@ class KimiK3MoEB10(KimiK3MoE):
                 # latent contiguous from its own GEMM
                 x, x_sf = self._quant_latent(latent)
                 with torch.profiler.record_function("moe.experts"):
-                    routed = self._run_moe_native(x, ids, scales, x_sf)
+                    routed = (
+                        self._run_moe_unfinalized(x, ids, x_sf)
+                        if fin_fuse
+                        else self._run_moe_native(x, ids, scales, x_sf))
             else:
                 routed = self._experts_trtllm_gen(
                     latent, logits, batch,
-                    after_routing=_fork_shared if late_fork else None)
+                    after_routing=(lambda: _fork_shared(gu3))
+                    if late_fork else None,
+                    unfinalized=fin_fuse)
         else:
             with torch.profiler.record_function("moe.routing"):
                 selected, scales = self._routing_opt(logits)
@@ -841,17 +958,33 @@ class KimiK3MoEB10(KimiK3MoE):
                             "moe.shared_ar_aux"):
                         shared_out = self._fi_ar_sh(shared_out)
                 self._evt_join.record(self._aux_stream)
-            with torch.profiler.record_function("moe.ar_norm_latent"):
-                reduced = self._fi_ar.norm_reduce(
-                    routed, self._norm_w,
-                    self._zero_residual[:batch], RMS_EPS,
-                )
+            if fin_fuse:
+                # ONE kernel: expert finalize (gather+scale of the
+                # unfinalized gemm2 partials) + oneshot AR + RMSNorm
+                g2, exp_w, exp_idx = routed
+                with torch.profiler.record_function(
+                        "moe.finalize_ar_norm"):
+                    reduced = self._fi_ar.moe_finalize_norm_reduce(
+                        g2, exp_idx, exp_w, self._norm_w,
+                        self._zero_residual[:batch], RMS_EPS,
+                    )
+            else:
+                with torch.profiler.record_function(
+                        "moe.ar_norm_latent"):
+                    reduced = self._fi_ar.norm_reduce(
+                        routed, self._norm_w,
+                        self._zero_residual[:batch], RMS_EPS,
+                    )
             # shared AR lands while norm_reduce runs; fold the add
             # into the fc2 GEMM epilogue (saves an elementwise pass)
             self._evt_join.wait(cur)
             with torch.profiler.record_function(
                     "moe.tail_gemm_fc2_full"):
-                out = torch.addmm(shared_out, reduced, self._fc2_full.T)
+                out = (self._tail_kernel(reduced, self._fc2_full,
+                                         shared_out)
+                       if self._tail_kernel is not None
+                       else torch.addmm(shared_out, reduced,
+                                        self._fc2_full.T))
             return out.view(hidden_states.shape)
 
         # -fc2shard ablation: baseline-style tail. Assemble the shared
@@ -861,7 +994,8 @@ class KimiK3MoEB10(KimiK3MoE):
         # so the ablation isolates exactly the fc2-shard trade:
         # (RS + 1/world fc2 + AR-hidden) vs (fat AR + full fc2).
         fc2_sharded = (self._flag_fc2_shard
-                       and batch <= FC2_SHARD_MAX_TOKENS)
+                       and batch <= getattr(self, "_fc2_shard_max",
+                                            FC2_SHARD_MAX_TOKENS))
         if world > 1 and not fc2_sharded:
             if skip_shared:
                 reduced = self.allreduce(routed)
@@ -899,6 +1033,10 @@ class KimiK3MoEB10(KimiK3MoE):
             # to hide the wait, so it always stays fused.
             rs_deferred = (self._flag_rs_defer and not skip_shared
                            and batch >= RS_DEFER_MIN_TOKENS)
+            # (a finalize-fused variant of this RS exists -
+            # reduce_scatter_cols_finalize - but measured ~6 us SLOWER
+            # at B<=8: the 16-way gather serializes the push loop. See
+            # moe_optimization.md "negative results".)
             with torch.profiler.record_function("moe.rs_latent"):
                 reduced_slice = self._rs_comm.reduce_scatter_cols(
                     routed, norm_w=self._norm_w_slice, eps=RMS_EPS,

@@ -93,8 +93,12 @@ def check_correctness(backends, shard, layer_idx: int) -> None:
         output_ok = torch.allclose(
             result["output"].float(), reference["output"].float(),
             atol=2e-2, rtol=2e-2)
-        conv_ok = torch.equal(result["conv_state"],
-                              reference["conv_state"])
+        # allclose, not equal: backends whose ATTN_RES step rounds
+        # differently (fp32 fused kernel vs the TRT kernel) feed the
+        # conv a hidden state that differs by ~1 bf16 ulp
+        conv_ok = torch.allclose(
+            result["conv_state"].float(),
+            reference["conv_state"].float(), atol=2e-2, rtol=2e-2)
         ssm_abs = (result["ssm_state"]
                    - reference["ssm_state"]).abs().max().item()
         attn_res_ok = torch.equal(

@@ -650,11 +650,34 @@ std::tuple<torch::Tensor, torch::Tensor> ag_qpush(
 // Optional fused RMSNorm: one block owns one token end-to-end so the
 // chunk sumsq can block-reduce, then a tiny second Lamport exchange
 // assembles the full-row sumsq (world x rows fp32).
+// Optional fused MoE FINALIZE on the push stage (fin_idx != null):
+// instead of reading a finalized [rows, cols] partial, the push
+// gathers the UNFINALIZED expert gemm2 rows (g2[fin_idx[t,k]], k <
+// FIN_K, -1 = token dropped by EP) scaled by fin_w[t,k] - the
+// standalone finalizeKernel (~5 us at decode sizes) disappears and
+// its gather rides the latency-bound RS push.
+#define FIN_K 16
+
+__device__ __forceinline__ void acc_u4_scaled(
+    float2 acc[4], uint4 v, float w) {
+    const uint32_t *p = &v.x;
+    #pragma unroll
+    for (int j = 0; j < 4; ++j) {
+        const float2 f = __bfloat1622float2(
+            *reinterpret_cast<const __nv_bfloat162 *>(&p[j]));
+        acc[j].x += w * f.x;
+        acc[j].y += w * f.y;
+    }
+}
+
 template <int WORLD>
 __global__ void rs_cols_lamport_kernel(
     const int64_t *__restrict__ buf_ptrs, int *__restrict__ meta,
     const uint4 *__restrict__ x, uint4 *__restrict__ out,
     const uint4 *__restrict__ norm_w,
+    const uint4 *__restrict__ g2, int64_t g2_stride_v,
+    const int *__restrict__ fin_idx,
+    const __nv_bfloat16 *__restrict__ fin_w,
     float eps, float inv_n,
     int rows, int chunk_v, int64_t x_stride_v,
     int64_t data_off, int64_t slot_bytes, int64_t scal_off,
@@ -676,14 +699,48 @@ __global__ void rs_cols_lamport_kernel(
     const int64_t clear_v = (int64_t)s_clear / 16;
 
     // ---- FI-style: one block owns one token (stride by grid) ----
+    __shared__ int s_fidx[FIN_K];
+    __shared__ float s_fw[FIN_K];
     for (int t = (int)blockIdx.x; t < rows; t += (int)gridDim.x) {
+        if (fin_idx != nullptr) {  // stage the token's gather map once
+            if (threadIdx.x < FIN_K) {
+                s_fidx[threadIdx.x] = fin_idx[t * FIN_K + threadIdx.x];
+                s_fw[threadIdx.x] = __bfloat162float(
+                    fin_w[t * FIN_K + threadIdx.x]);
+            }
+            __syncthreads();
+        }
         // 1) push: peer r gets my r-th column slice of token t
         for (int c = (int)threadIdx.x; c < chunk_v; c += (int)blockDim.x) {
             const int64_t idx = (int64_t)t * chunk_v + c;
             #pragma unroll
             for (int r = 0; r < WORLD; ++r) {
-                uint4 v = x[(int64_t)t * x_stride_v
-                            + (int64_t)r * chunk_v + c];
+                uint4 v;
+                if (fin_idx == nullptr) {
+                    v = x[(int64_t)t * x_stride_v
+                          + (int64_t)r * chunk_v + c];
+                } else {
+                    // fused finalize: gather+scale the unfinalized
+                    // gemm2 rows for this token's k picks
+                    float2 acc[4] = {{0.f, 0.f}, {0.f, 0.f},
+                                     {0.f, 0.f}, {0.f, 0.f}};
+                    for (int k = 0; k < FIN_K; ++k) {
+                        const int p = s_fidx[k];
+                        if (p < 0) continue;
+                        acc_u4_scaled(
+                            acc,
+                            g2[(int64_t)p * g2_stride_v
+                               + (int64_t)r * chunk_v + c],
+                            s_fw[k]);
+                    }
+                    uint32_t *vw = &v.x;
+                    #pragma unroll
+                    for (int j = 0; j < 4; ++j) {
+                        const __nv_bfloat162 b =
+                            __float22bfloat162_rn(acc[j]);
+                        vw[j] = *reinterpret_cast<const uint32_t *>(&b);
+                    }
+                }
                 v.x = canon(v.x); v.y = canon(v.y);
                 v.z = canon(v.z); v.w = canon(v.w);
                 uint4 *peer = reinterpret_cast<uint4 *>(
@@ -691,6 +748,8 @@ __global__ void rs_cols_lamport_kernel(
                 st_volatile_v4(peer + (int64_t)rank * tot + idx, v);
             }
         }
+        if (fin_idx != nullptr)
+            __syncthreads();  // s_fidx/s_fw reused next token
     }
 
     // 2) clear the slot the previous call consumed (size-tracked)
@@ -1125,8 +1184,69 @@ torch::Tensor rs_cols(
             use_norm
                 ? reinterpret_cast<const uint4 *>(norm_w.data_ptr())
                 : nullptr,
+            (const uint4 *)nullptr, (int64_t)0,
+            (const int *)nullptr, (const __nv_bfloat16 *)nullptr,
             (float)eps, 1.0f / (float)cols,
             rows, chunk_v, stride / 8,
+            data_off, slot_bytes, scal_off, (int)rank,
+            (int)(defer != 0)));
+    return out;
+}
+
+// Column RS(+norm) with the MoE finalize FUSED on the push stage:
+// g2 = UNFINALIZED expert gemm2 output [P, cols] bf16 (row-strided ok),
+// fin_idx = expanded (token, k) -> permuted row map [rows, 16] int32
+// (-1 = dropped), fin_w = routing weights [rows, 16] bf16. Replaces
+// finalizeKernel + reduce_scatter_cols. Same dedicated-instance and
+// alignment rules as rs_cols.
+torch::Tensor rs_cols_finalize(
+    torch::Tensor buf_ptrs, torch::Tensor rounds,
+    torch::Tensor g2, torch::Tensor fin_idx, torch::Tensor fin_w,
+    torch::Tensor norm_w, double eps,
+    int64_t data_off, int64_t slot_bytes, int64_t rank, int64_t world,
+    int64_t defer)
+{
+    const int rows = fin_idx.size(0), cols = g2.size(1);
+    TORCH_CHECK(g2.scalar_type() == torch::kBFloat16);
+    TORCH_CHECK(fin_idx.scalar_type() == torch::kInt32
+                && fin_idx.is_contiguous() && fin_idx.size(1) == 16);
+    TORCH_CHECK(fin_w.scalar_type() == torch::kBFloat16
+                && fin_w.is_contiguous()
+                && fin_w.sizes() == fin_idx.sizes());
+    TORCH_CHECK(cols % (world * 8) == 0 && g2.stride(0) % 8 == 0,
+                "need 16B-aligned chunks");
+    TORCH_CHECK(((uintptr_t)g2.data_ptr()) % 16 == 0, "unaligned base");
+    const int chunk_cols = cols / world;
+    const int chunk_v = chunk_cols / 8;
+    const int64_t numel_v = (int64_t)rows * chunk_v;
+    const int64_t scal_off = (numel_v * world * 16 + 255) / 256 * 256;
+    TORCH_CHECK(scal_off + (int64_t)world * rows * 4 <= slot_bytes,
+                "slot too small for data + sumsq scalars");
+    const bool use_norm = norm_w.numel() > 0;
+    if (use_norm)
+        TORCH_CHECK(norm_w.is_contiguous()
+                    && norm_w.numel() == chunk_cols);
+    int sm = 0;
+    cudaDeviceGetAttribute(&sm, cudaDevAttrMultiProcessorCount,
+                           g2.get_device());
+    if (sm < 1) sm = 1;
+    int grid = rows < sm ? rows : sm;
+    if (grid < 1) grid = 1;
+    auto out = torch::empty({rows, chunk_cols}, g2.options());
+    DISPATCH_WORLD(world,
+        launch_pdl(rs_cols_lamport_kernel<kWorld>, grid, 256,
+            buf_ptrs.data_ptr<int64_t>(), rounds.data_ptr<int>(),
+            (const uint4 *)nullptr,
+            reinterpret_cast<uint4 *>(out.data_ptr()),
+            use_norm
+                ? reinterpret_cast<const uint4 *>(norm_w.data_ptr())
+                : nullptr,
+            reinterpret_cast<const uint4 *>(g2.data_ptr()),
+            g2.stride(0) / 8,
+            fin_idx.data_ptr<int>(),
+            reinterpret_cast<const __nv_bfloat16 *>(fin_w.data_ptr()),
+            (float)eps, 1.0f / (float)cols,
+            rows, chunk_v, (int64_t)0,
             data_off, slot_bytes, scal_off, (int)rank,
             (int)(defer != 0)));
     return out;
@@ -1424,6 +1544,12 @@ torch::Tensor rs_cols(
     torch::Tensor norm_w, double eps,
     int64_t data_off, int64_t slot_bytes, int64_t rank, int64_t world,
     int64_t defer);
+torch::Tensor rs_cols_finalize(
+    torch::Tensor buf_ptrs, torch::Tensor rounds,
+    torch::Tensor g2, torch::Tensor fin_idx, torch::Tensor fin_w,
+    torch::Tensor norm_w, double eps,
+    int64_t data_off, int64_t slot_bytes, int64_t rank, int64_t world,
+    int64_t defer);
 torch::Tensor rs_cols_scale(
     torch::Tensor buf_ptrs, torch::Tensor rounds, torch::Tensor out,
     torch::Tensor norm_w, double eps,
@@ -1459,7 +1585,7 @@ def get_module():
             cpp_sources=_CPP_SRC,
             cuda_sources=_CUDA_SRC,
             functions=["ag_lamport", "ag_mxfp8", "ag_qpush",
-                       "rs_lamport", "rs_cols",
+                       "rs_lamport", "rs_cols", "rs_cols_finalize",
                        "rs_cols_scale", "rs_rows",
                        "ce_sync", "ce_copy2d", "ce_local2d"],
             extra_cuda_cflags=["-O3"],

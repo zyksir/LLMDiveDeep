@@ -1,5 +1,13 @@
 # Kimi-K3 decode layers: TRT-LLM baseline vs b10 optimizations
 
+> **Aug 5 update:** the numbers and crossovers in THIS file were
+> measured on the previous box and several moved on the current
+> `model-performance` node (faster collectives). The current
+> validated campaign lives in **`moe_optimization.md`** (MoE decode,
+> honest ONESHOT baseline, locked clocks, multi-input averaging) and
+> **`kda_optimization.md`** (KDA decode + prefill). This file remains
+> the architecture/mechanism reference.
+
 Layer-level decode benchmarks on B200 inside the `trt-dev` container
 (official `nvcr.io/nvidia/tensorrt-llm/release:1.3.0rc23`): the REAL
 TRT-LLM modules as baseline, plus a b10-optimized subclass with one

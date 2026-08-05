@@ -151,8 +151,19 @@ def _flash_kda(inputs: PrefillInputs, shape: Shape) -> Callable:
     return _flashkda_fwd_builder(inputs, shape, flash_kda)
 
 
-_KDA_B200_DIR = (
-    "/workspace/model-performance/yikai/diffusion_inference/kda_b200_install"
+import os as _os
+
+_KDA_B200_DIR = _os.environ.get("KDA_B200_DIR") or next(
+    (d for d in (
+        # local clone (see RUNBOOK: github.com/Int21-AI/KDA-B200,
+        # pip install -e . --no-build-isolation in trt-dev)
+        str(__import__("pathlib").Path(__file__).resolve()
+            .parents[3] / "kda_b200_install"),
+        "/workspace/model-performance/yikai/diffusion_inference/"
+        "kda_b200_install",
+    ) if __import__("pathlib").Path(d).is_dir()),
+    "/workspace/model-performance/yikai/diffusion_inference/"
+    "kda_b200_install",
 )
 _FLASHKDA_PTX_MAX_TOKENS = 262144  # int32 byte offsets overflow (IMA) past this
 
@@ -192,6 +203,35 @@ def _flashkda_ptx_int21(inputs: PrefillInputs, shape: Shape) -> Callable:
             f"{_FLASHKDA_PTX_MAX_TOKENS} total tokens (got {total_tokens})"
         )
     return _flashkda_fwd_builder(inputs, shape, _import_flash_kda_ptx())
+
+
+@KDA_PREFILL.register(
+    "fi_recurrent_kda",
+    note="flashinfer PR #4262 CAKE SM100a recurrent-KDA prefill "
+    "(safe gate; l2norm+gate fused in-kernel; bf16 state; needs "
+    "cu_seqlens for multi-token)",
+)
+def _fi_recurrent_kda(inputs: PrefillInputs, shape: Shape) -> Callable:
+    import torch as _t
+
+    from flashinfer.kda_decode import recurrent_kda
+
+    beta = inputs.beta.to(_t.bfloat16)  # contract: PRE-sigmoided bf16
+
+    def run():
+        return recurrent_kda(
+            inputs.q, inputs.k, inputs.v, inputs.raw_gate, beta,
+            A_log=inputs.A_log, dt_bias=inputs.dt_bias,
+            scale=shape.key_dim ** -0.5,
+            initial_state=None,  # zero-init; bf16 [N,HV,V,K] pool
+            output_final_state=False,
+            use_qk_l2norm_in_kernel=True,
+            use_gate_in_kernel=True,
+            lower_bound=SAFE_GATE_LOWER_BOUND,
+            cu_seqlens=inputs.cu_seqlens,
+        )
+
+    return run
 
 
 @KDA_PREFILL.register(

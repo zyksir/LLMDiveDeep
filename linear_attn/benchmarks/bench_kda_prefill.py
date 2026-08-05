@@ -116,6 +116,7 @@ CANONICAL_GATE_CHECKED = (
     "b10_kda_chunk_prefill",
 )
 SAFE_GATE_CHECKED = (
+    "fi_recurrent_kda",
     "fla_kda_safe_triton",
     "flash_kda",
     "flashkda_ptx_int21",

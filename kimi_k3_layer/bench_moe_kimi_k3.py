@@ -47,7 +47,7 @@ LARGE_SIZES = (512, 1024, 2048, 4096, 8192)
 
 # ablation matrix: label -> set_opt_flags kwargs (first = everything on)
 FULL = dict(merged_gemm=True, routing="ours", fc1_shard=True,
-            comm="custom", overlap_shared=True, prefill_opt=True)
+            comm="fi", overlap_shared=True, prefill_opt=True)
 ABLATIONS = {
     "opt": FULL,
     "-merged": {**FULL, "merged_gemm": False},
@@ -59,7 +59,15 @@ ABLATIONS = {
     # tail (AR+norm -> full fc2, shared AR on the aux stream) at
     # B>=REF_TAIL_MIN_TOKENS
     "-reftail": {**FULL, "ref_tail": False},
-    "-customcomm": {**FULL, "comm": "fi"},
+    # finalize+AR+norm fusion off: ref tail keeps the separate
+    # finalizeKernel + fused AR+norm pair
+    "-finfuse": {**FULL, "fin_fuse": False},
+    # three-way input merge off: shared gate/up runs as its own GEMM
+    # on the aux stream instead of riding the wide input GEMM
+    "-merge3": {**FULL, "merge3": False},
+    # comm default is now "fi" (won on this node with merge3);
+    # this column re-enables the custom Lamport RS+norm tail
+    "+customrs": {**FULL, "comm": "custom"},
     "-overlap": {**FULL, "overlap_shared": False},
     # TIMING PROBE, output intentionally wrong (err column is
     # expected to be large): drops the shared chain entirely. opt
@@ -254,14 +262,23 @@ def capture(fn, iters: int, world: int = 1):
     so this measures the production configuration). Production's
     cuda_graph_runner wraps capture in with_multi_stream(True), which
     is what lets the baseline's maybe_execute_in_parallel fork the
-    shared expert onto its aux stream - replicate that here."""
+    shared expert onto its aux stream - replicate that here. The first
+    warmup pass runs under the AUTOTUNER (production's
+    _run_autotuner_warmup populates the tactic cache before capture -
+    without it every tunable op runs its default heuristic)."""
     import torch.distributed as dist
 
+    from tensorrt_llm._torch.autotuner import autotune
     from tensorrt_llm._torch.modules.multi_stream_utils import (
         with_multi_stream,
     )
 
     with with_multi_stream(True):
+        with autotune():
+            fn()
+        torch.cuda.synchronize()
+        if world > 1:
+            dist.barrier()
         for _ in range(10):
             fn()
         torch.cuda.synchronize()
@@ -277,23 +294,52 @@ def capture(fn, iters: int, world: int = 1):
     return graph
 
 
-def time_graph(graph, iters: int, world: int = 1):
+def time_graph(graph, iters: int, world: int = 1, *,
+               h: torch.Tensor | None = None, n_inputs: int = 1,
+               seed: int = 0):
+    """Replay timing, max over ranks. With h + n_inputs > 1 the input
+    buffer is REWRITTEN with a fresh rank-identical tensor before each
+    timed replay, so the reported number is the MEAN over n_inputs
+    routings (EP expert load - and the skew every collective absorbs -
+    is data-dependent; a single input is one draw from that
+    distribution). Restores h afterwards."""
+    import statistics
+
     import torch.distributed as dist
 
-    graph.replay()
-    torch.cuda.synchronize()
-    start = torch.cuda.Event(enable_timing=True)
-    end = torch.cuda.Event(enable_timing=True)
-    start.record()
-    graph.replay()
-    end.record()
-    end.synchronize()
-    t = start.elapsed_time(end) * 1000 / iters
-    if world > 1:
-        tt = torch.tensor([t], dtype=torch.float64)
-        dist.all_reduce(tt, op=dist.ReduceOp.MAX)
-        t = tt.item()
-    return t
+    h_orig = h.clone() if (h is not None and n_inputs > 1) else None
+    samples = []
+    for k in range(max(n_inputs, 1)):
+        if h_orig is not None:
+            gen = torch.Generator(device="cuda").manual_seed(
+                97 + 131 * seed + k)
+            h.copy_(torch.randn(h.shape, generator=gen, device="cuda",
+                                dtype=torch.float32).to(h.dtype))
+            torch.cuda.synchronize()
+            if world > 1:
+                dist.barrier()
+        graph.replay()
+        torch.cuda.synchronize()
+        start = torch.cuda.Event(enable_timing=True)
+        end = torch.cuda.Event(enable_timing=True)
+        start.record()
+        graph.replay()
+        end.record()
+        end.synchronize()
+        t = start.elapsed_time(end) * 1000 / iters
+        if world > 1:
+            tt = torch.tensor([t], dtype=torch.float64)
+            dist.all_reduce(tt, op=dist.ReduceOp.MAX)
+            t = tt.item()
+        samples.append(t)
+    if h_orig is not None:
+        h.copy_(h_orig)
+        torch.cuda.synchronize()
+        if world > 1:
+            dist.barrier()
+        graph.replay()  # regenerate graph outputs with the original h
+        torch.cuda.synchronize()
+    return statistics.mean(samples)
 
 
 def profile_graph(graph, path: Path, rank: int, world: int = 1,
@@ -367,6 +413,10 @@ def main() -> None:
                         help="small | large | comma list of token counts")
     parser.add_argument("--iters", type=int, default=100)
     parser.add_argument(
+        "--n-inputs", type=int, default=8,
+        help="average the timing over this many fresh rank-identical "
+        "inputs (routing/EP-skew is data-dependent; 1 = old behavior)")
+    parser.add_argument(
         "--ablate", action="store_true",
         help="run every opt configuration (each switch off one at a "
         "time), not just full-opt")
@@ -375,6 +425,14 @@ def main() -> None:
         help="export CUDA-graph-replay traces of baseline + full-opt "
         "at these batch sizes (results/); graph replay only - eager "
         "traces are dominated by CPU launch overhead")
+    parser.add_argument(
+        "--moe-class", default="b10",
+        choices=("b10", "agg", "disagg"),
+        help="b10 = research class (all switches; required for "
+        "--ablate); agg = KimiK3MoEForAgg (deployment layout: fc1+fc2 "
+        "sharded, prefill-first; B10_AGG_FULL_FC2=1 adds the one-time "
+        "fc2 weight all-gather); disagg = KimiK3MoEForDisAggDecode "
+        "(decode-only layout, full fc2, ref tail at B>=16)")
     parser.add_argument(
         "--backend", default="trtllm", choices=("trtllm", "cutlass"),
         help="expert backend: trtllm = PRODUCTION K3 stack "
@@ -422,10 +480,22 @@ def main() -> None:
             device_id=torch.device("cuda", rank),
         )
 
+    if args.moe_class != "b10":
+        from kimi_k3_layer.moe_deploy_kimi_k3 import (
+            KimiK3MoEForAgg,
+            KimiK3MoEForDisAggDecode,
+        )
+        if args.ablate:
+            parser.error("--ablate needs --moe-class b10 (deployment "
+                         "classes freeze their configuration at init)")
+    moe_cls = {"b10": KimiK3MoEB10}.get(args.moe_class) or (
+        KimiK3MoEForAgg if args.moe_class == "agg"
+        else KimiK3MoEForDisAggDecode)
+
     model_config = k3_model_config(
         rank, world, moe_backend=args.backend.upper())
     aux = {k: torch.cuda.Stream() for k in AuxStreamType}
-    moe = KimiK3MoEB10(
+    moe = moe_cls(
         model_config, layer_idx=0, aux_stream_dict=aux,
         reduce_output=world > 1,
     ).cuda()
@@ -498,7 +568,8 @@ def main() -> None:
                 dtype=torch.bfloat16))
 
         for label, flags in configs.items():
-            moe.set_opt_flags(**flags)
+            if args.moe_class == "b10":
+                moe.set_opt_flags(**flags)
             if rank == 0:
                 print(f"[phase1] B={batch}: capture {label}", flush=True)
             res = {}
@@ -508,7 +579,9 @@ def main() -> None:
                     res["out"] = moe(h, meta)
 
             g = capture(opt_fn, iters=args.iters, world=world)
-            times[batch, label] = time_graph(g, args.iters, world)
+            times[batch, label] = time_graph(
+                g, args.iters, world,
+                h=h, n_inputs=args.n_inputs, seed=batch)
             outs[batch, label] = res["out"].clone()
             # BENCH_PROFILE_CONFIG selects which ablation config to
             # trace (default "opt"); needs --ablate for other labels.
@@ -540,7 +613,8 @@ def main() -> None:
                     h.copy_(h_orig)
                     torch.cuda.synchronize()
             del g
-        moe.set_opt_flags(**ABLATIONS["opt"])
+        if args.moe_class == "b10":
+            moe.set_opt_flags(**ABLATIONS["opt"])
 
     # Phase 2: baseline (real TRT-LLM modules, eager ref + captured).
     rows = []
@@ -562,7 +636,8 @@ def main() -> None:
                 KimiK3MoE.forward(moe, h, meta)
 
         g = capture(base_fn, iters=args.iters, world=world)
-        t_base = time_graph(g, args.iters, world)
+        t_base = time_graph(g, args.iters, world,
+                            h=h, n_inputs=args.n_inputs, seed=batch)
         if batch in profile_sizes:
             res_dir = _LLMDIR / "kimi_k3_layer" / "results"
             profile_graph(

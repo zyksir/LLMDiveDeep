@@ -142,10 +142,17 @@ def k3_model_config(rank: int, world: int,
         moe_ep_size=world,
         moe_tp_size=1,
     )
+    # honest-baseline knob: production runs AUTO (-> NCCL_SYMMETRIC on
+    # this box); BENCH_ALLREDUCE_STRATEGY sweeps alternatives (ONESHOT,
+    # TWOSHOT, MIN_LATENCY, NCCL, ...) so the baseline is the FASTEST
+    # configuration reachable by flipping supported knobs, not a straw
+    # man. Applies to baseline and opt alike (both use self.allreduce).
     return ModelConfig(
         pretrained_config=k3_pretrained_config(),
         mapping=mapping,
         moe_backend=moe_backend,
+        allreduce_strategy=os.environ.get(
+            "BENCH_ALLREDUCE_STRATEGY", "AUTO"),
     )
 
 

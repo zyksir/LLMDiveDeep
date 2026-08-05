@@ -33,7 +33,7 @@ from pathlib import Path
 
 import torch
 
-from .config import K3Shard
+from .config import RMS_EPS, K3Shard
 from .kda_trtllm_kimi_k3 import KimiK3KDA
 
 # the b10 CuTeDSL kernels live in the sibling linear_attn package; its
@@ -78,6 +78,41 @@ class KimiK3KDAB10(KimiK3KDA):
 
     def comparable_ssm_state(self) -> torch.Tensor:
         return self.ssm_state.transpose(-1, -2)
+
+    def forward(self) -> torch.Tensor:
+        """Baseline forward with the AttnRes step swapped for the
+        CuTeDSLGen fused kernel (attn_res_cutedsl: residual add +
+        block write + softmax depth-mix + RMSNorm in ONE latency-bound
+        launch, ~5.0 us vs the TRT kernel's ~7; graph-safe).
+        OFF by default: standalone the kernel is 5.0 us vs ~7,
+        but IN-LAYER it regressed +1.5-2 us at B=2-16 and broke
+        graph capture at B=1 (PDL-chain interaction; see
+        kda_optimization.md). B10_ATTNRES_KERNEL=1 re-enables."""
+        import os
+
+        if os.environ.get("B10_ATTNRES_KERNEL", "0") == "0":
+            return super().forward()
+        from .attn_res_cutedsl import attn_res as attn_res_cute
+
+        with torch.profiler.record_function("kda.attn_res_cute"):
+            hidden = attn_res_cute(
+                self.prefix_sum,
+                self.delta,
+                self.block_residual,
+                self.attn_res.norm_weight,
+                self.attn_res.proj_weight,
+                self.input_norm_weight,
+                self.prev_valid_blocks,
+                self.block_write_idx
+                if self.is_block_write_layer else -1,
+                eps=self.attn_res.variance_epsilon,
+                out_eps=RMS_EPS,
+            )
+        qkv, output_gate, f_a, raw_beta = self._project(hidden)
+        output = self._kernel_forward(qkv, output_gate, f_a, raw_beta)
+        with torch.profiler.record_function("kda.o_proj"):
+            return self.o_proj(
+                output.reshape(self.batch, self.shard.proj_dim))
 
     def _kernel_forward(
         self,

@@ -220,6 +220,37 @@ class OneShotComm:
             1 if defer_scale else 0,
         )
 
+    def reduce_scatter_cols_finalize(
+        self, g2: torch.Tensor, fin_idx: torch.Tensor,
+        fin_w: torch.Tensor, *, norm_w: torch.Tensor | None = None,
+        eps: float = 1e-6, defer_scale: bool = False,
+    ) -> torch.Tensor:
+        """``reduce_scatter_cols`` with the MoE FINALIZE fused on the
+        push stage: takes the UNFINALIZED expert gemm2 output
+        (``run_moe(do_finalize=False)``) plus the [B, 16] permuted-row
+        map (-1 = dropped) and routing weights, gathers+scales in the
+        latency-bound push loop, and returns my [B, C/world] column
+        slice of the TP-reduced finalized latent (optionally normed).
+        Kills the standalone finalizeKernel. Same dedicated-instance
+        rule as reduce_scatter_cols."""
+        rows = fin_idx.shape[0]
+        cols = g2.shape[1]
+        if self.world == 1:
+            raise ValueError("col-RS is a no-op at TP1")
+        need = rows * cols * 2 + 256 + self.world * rows * 4
+        assert need <= self.slot_bytes, "instance too small"
+        assert not (defer_scale and norm_w is None)
+        from .comm_cuda import get_module
+
+        return get_module().rs_cols_finalize(
+            self.buf_ptrs, self.meta, g2,
+            fin_idx.to(torch.int32), fin_w,
+            norm_w if norm_w is not None
+            else torch.empty(0, dtype=torch.bfloat16, device=g2.device),
+            eps, self.data_off, self.slot_bytes, self.rank, self.world,
+            1 if defer_scale else 0,
+        )
+
     def scale_deferred(self, out: torch.Tensor, norm_w: torch.Tensor,
                        *, eps: float = 1e-6) -> torch.Tensor:
         """Apply the deferred 1/rms scale after
