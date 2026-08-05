@@ -1,0 +1,4 @@
+impl,latency_us,mode,heads,batch,seq_len,tokens_s,key_dim,value_dim,state_dtype,note
+flashkda_ptx_int21,1443.0015563964844,kda_prefill,96,1,8192,5677055.553881285,128,128,float32,"INT21 KDA-B200: plain CUDA/PTX rewrite of FlashKDA, ~1.5x CUTLASS; int32 offsets limit it to total tokens <= 262144"
+fi_recurrent_kda,6381.942367553711,kda_prefill,96,1,8192,1283621.7452618754,128,128,float32,flashinfer PR #4262 CAKE SM100a recurrent-KDA prefill (safe gate; l2norm+gate fused in-kernel; bf16 state; needs cu_seqlens for multi-token)
+b10_kda_chunk_prefill,1676.982307434082,kda_prefill,96,1,8192,4884965.073086799,128,128,float32,"b10 promoted CuTeDSLGen chunk-prefill champion (INT21-port schedule); consumes pre-activated log-decay (canonical gate, activated untimed in the builder)"
