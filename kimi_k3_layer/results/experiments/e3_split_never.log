@@ -1,0 +1,190 @@
+=== e3_split_never ===
+[1785829663.950699] [yikai-dev-pod-b200-0:146139:0]      ucp_worker.c:1485 UCX  ERROR uct_iface_open(rc_verbs/mlx5_10:1) failed: Address not valid
+[1785829664.059930] [yikai-dev-pod-b200-0:146135:0]      ucp_worker.c:1485 UCX  ERROR uct_iface_open(rc_verbs/mlx5_10:1) failed: Address not valid
+[1785829664.115684] [yikai-dev-pod-b200-0:146136:0]      ucp_worker.c:1485 UCX  ERROR uct_iface_open(rc_verbs/mlx5_10:1) failed: Address not valid
+[1785829664.182869] [yikai-dev-pod-b200-0:146134:0]      ucp_worker.c:1485 UCX  ERROR uct_iface_open(rc_verbs/mlx5_10:1) failed: Address not valid
+[1785829664.184519] [yikai-dev-pod-b200-0:146133:0]      ucp_worker.c:1485 UCX  ERROR uct_iface_open(rc_verbs/mlx5_10:1) failed: Address not valid
+[1785829664.199615] [yikai-dev-pod-b200-0:146137:0]      ucp_worker.c:1485 UCX  ERROR uct_iface_open(rc_verbs/mlx5_10:1) failed: Address not valid
+[1785829664.199997] [yikai-dev-pod-b200-0:146138:0]      ucp_worker.c:1485 UCX  ERROR uct_iface_open(rc_verbs/mlx5_10:1) failed: Address not valid
+[1785829664.244923] [yikai-dev-pod-b200-0:146140:0]      ucp_worker.c:1485 UCX  ERROR uct_iface_open(rc_verbs/mlx5_10:1) failed: Address not valid
+Skipping import of cpp extensions due to incompatible torch version 2.12.0a0+5aff3928d8.nv26.05 for torchao version 0.15.0             Please see https://github.com/pytorch/ao/issues/2919 for more info
+Skipping import of cpp extensions due to incompatible torch version 2.12.0a0+5aff3928d8.nv26.05 for torchao version 0.15.0             Please see https://github.com/pytorch/ao/issues/2919 for more info
+Skipping import of cpp extensions due to incompatible torch version 2.12.0a0+5aff3928d8.nv26.05 for torchao version 0.15.0             Please see https://github.com/pytorch/ao/issues/2919 for more info
+Skipping import of cpp extensions due to incompatible torch version 2.12.0a0+5aff3928d8.nv26.05 for torchao version 0.15.0             Please see https://github.com/pytorch/ao/issues/2919 for more info
+Skipping import of cpp extensions due to incompatible torch version 2.12.0a0+5aff3928d8.nv26.05 for torchao version 0.15.0             Please see https://github.com/pytorch/ao/issues/2919 for more info
+Skipping import of cpp extensions due to incompatible torch version 2.12.0a0+5aff3928d8.nv26.05 for torchao version 0.15.0             Please see https://github.com/pytorch/ao/issues/2919 for more info
+Skipping import of cpp extensions due to incompatible torch version 2.12.0a0+5aff3928d8.nv26.05 for torchao version 0.15.0             Please see https://github.com/pytorch/ao/issues/2919 for more info
+Skipping import of cpp extensions due to incompatible torch version 2.12.0a0+5aff3928d8.nv26.05 for torchao version 0.15.0             Please see https://github.com/pytorch/ao/issues/2919 for more info
+[TensorRT-LLM] TensorRT LLM version: 1.3.0rc23
+[TensorRT-LLM] TensorRT LLM version: 1.3.0rc23
+[TensorRT-LLM] TensorRT LLM version: 1.3.0rc23
+[TensorRT-LLM] TensorRT LLM version: 1.3.0rc23
+[TensorRT-LLM] TensorRT LLM version: 1.3.0rc23
+[TensorRT-LLM] TensorRT LLM version: 1.3.0rc23
+[TensorRT-LLM] TensorRT LLM version: 1.3.0rc23
+[TensorRT-LLM] TensorRT LLM version: 1.3.0rc23
+`torch_dtype` is deprecated! Use `dtype` instead!
+`torch_dtype` is deprecated! Use `dtype` instead!
+`torch_dtype` is deprecated! Use `dtype` instead!
+`torch_dtype` is deprecated! Use `dtype` instead!
+`torch_dtype` is deprecated! Use `dtype` instead!
+`torch_dtype` is deprecated! Use `dtype` instead!
+`torch_dtype` is deprecated! Use `dtype` instead!
+`torch_dtype` is deprecated! Use `dtype` instead!
+TP8 Kimi-K3 MoE (trtllm experts): TRT-LLM baseline vs b10 (configs: opt; fc1-shard active at B<=4)
+[phase1] B=1: capture opt
+[phase1] B=2: capture opt
+[phase1] B=4: capture opt
+[phase1] B=8: capture opt
+[phase1] B=16: capture opt
+[phase1] B=32: capture opt
+[phase1] B=64: capture opt
+[phase1] B=128: capture opt
+    B   base_us        opt_us      err(opt)
+[phase2] B=1: baseline ref + capture
+[TRT-LLM] [W] [runtime][RANK 5] 
+**************************************************************************
+* NVLS (NVLink SHARP) DISABLED for NCCL -- falling back to NVLink P2P     *
+**************************************************************************
+* The GPU advertises multicast support, but the NVLink fabric/IMEX plane *
+* is NOT provisioned on this node, so NVLS multicast memory cannot be    *
+* bound. Collectives will still work over NVLink P2P, but NVLS-           *
+* accelerated NCCL is off and performance may be reduced. (Single-node   *
+* NVLS over POSIX-FD, e.g. MNNVL allreduce, is unaffected.)              *
+*                                                                        *
+* To enable NVLS: start nvidia-imex and expose                           *
+* /dev/nvidia-caps-imex-channels to the container. Set                   *
+* NCCL_NVLS_ENABLE=1 explicitly to override this fallback.               *
+**************************************************************************
+[TRT-LLM] [W] [runtime][RANK 1] 
+**************************************************************************
+* NVLS (NVLink SHARP) DISABLED for NCCL -- falling back to NVLink P2P     *
+**************************************************************************
+* The GPU advertises multicast support, but the NVLink fabric/IMEX plane *
+* is NOT provisioned on this node, so NVLS multicast memory cannot be    *
+* bound. Collectives will still work over NVLink P2P, but NVLS-           *
+* accelerated NCCL is off and performance may be reduced. (Single-node   *
+* NVLS over POSIX-FD, e.g. MNNVL allreduce, is unaffected.)              *
+*                                                                        *
+* To enable NVLS: start nvidia-imex and expose                           *
+* /dev/nvidia-caps-imex-channels to the container. Set                   *
+* NCCL_NVLS_ENABLE=1 explicitly to override this fallback.               *
+**************************************************************************
+[TRT-LLM] [W] [runtime][RANK 3] 
+**************************************************************************
+* NVLS (NVLink SHARP) DISABLED for NCCL -- falling back to NVLink P2P     *
+**************************************************************************
+* The GPU advertises multicast support, but the NVLink fabric/IMEX plane *
+* is NOT provisioned on this node, so NVLS multicast memory cannot be    *
+* bound. Collectives will still work over NVLink P2P, but NVLS-           *
+* accelerated NCCL is off and performance may be reduced. (Single-node   *
+* NVLS over POSIX-FD, e.g. MNNVL allreduce, is unaffected.)              *
+*                                                                        *
+* To enable NVLS: start nvidia-imex and expose                           *
+* /dev/nvidia-caps-imex-channels to the container. Set                   *
+* NCCL_NVLS_ENABLE=1 explicitly to override this fallback.               *
+**************************************************************************
+[TRT-LLM] [W] [runtime][RANK 0] 
+**************************************************************************
+* NVLS (NVLink SHARP) DISABLED for NCCL -- falling back to NVLink P2P     *
+**************************************************************************
+* The GPU advertises multicast support, but the NVLink fabric/IMEX plane *
+* is NOT provisioned on this node, so NVLS multicast memory cannot be    *
+* bound. Collectives will still work over NVLink P2P, but NVLS-           *
+* accelerated NCCL is off and performance may be reduced. (Single-node   *
+* NVLS over POSIX-FD, e.g. MNNVL allreduce, is unaffected.)              *
+*                                                                        *
+* To enable NVLS: start nvidia-imex and expose                           *
+* /dev/nvidia-caps-imex-channels to the container. Set                   *
+* NCCL_NVLS_ENABLE=1 explicitly to override this fallback.               *
+**************************************************************************
+[TRT-LLM] [W] [runtime][RANK 2] 
+**************************************************************************
+* NVLS (NVLink SHARP) DISABLED for NCCL -- falling back to NVLink P2P     *
+**************************************************************************
+* The GPU advertises multicast support, but the NVLink fabric/IMEX plane *
+* is NOT provisioned on this node, so NVLS multicast memory cannot be    *
+* bound. Collectives will still work over NVLink P2P, but NVLS-           *
+* accelerated NCCL is off and performance may be reduced. (Single-node   *
+* NVLS over POSIX-FD, e.g. MNNVL allreduce, is unaffected.)              *
+*                                                                        *
+* To enable NVLS: start nvidia-imex and expose                           *
+* /dev/nvidia-caps-imex-channels to the container. Set                   *
+* NCCL_NVLS_ENABLE=1 explicitly to override this fallback.               *
+**************************************************************************
+[TRT-LLM] [W] [runtime][RANK 4] 
+**************************************************************************
+* NVLS (NVLink SHARP) DISABLED for NCCL -- falling back to NVLink P2P     *
+**************************************************************************
+* The GPU advertises multicast support, but the NVLink fabric/IMEX plane *
+* is NOT provisioned on this node, so NVLS multicast memory cannot be    *
+* bound. Collectives will still work over NVLink P2P, but NVLS-           *
+* accelerated NCCL is off and performance may be reduced. (Single-node   *
+* NVLS over POSIX-FD, e.g. MNNVL allreduce, is unaffected.)              *
+*                                                                        *
+* To enable NVLS: start nvidia-imex and expose                           *
+* /dev/nvidia-caps-imex-channels to the container. Set                   *
+* NCCL_NVLS_ENABLE=1 explicitly to override this fallback.               *
+**************************************************************************
+[TRT-LLM] [W] [runtime][RANK 7] 
+**************************************************************************
+* NVLS (NVLink SHARP) DISABLED for NCCL -- falling back to NVLink P2P     *
+**************************************************************************
+* The GPU advertises multicast support, but the NVLink fabric/IMEX plane *
+* is NOT provisioned on this node, so NVLS multicast memory cannot be    *
+* bound. Collectives will still work over NVLink P2P, but NVLS-           *
+* accelerated NCCL is off and performance may be reduced. (Single-node   *
+* NVLS over POSIX-FD, e.g. MNNVL allreduce, is unaffected.)              *
+*                                                                        *
+* To enable NVLS: start nvidia-imex and expose                           *
+* /dev/nvidia-caps-imex-channels to the container. Set                   *
+* NCCL_NVLS_ENABLE=1 explicitly to override this fallback.               *
+**************************************************************************
+[TRT-LLM] [W] [runtime][RANK 6] 
+**************************************************************************
+* NVLS (NVLink SHARP) DISABLED for NCCL -- falling back to NVLink P2P     *
+**************************************************************************
+* The GPU advertises multicast support, but the NVLink fabric/IMEX plane *
+* is NOT provisioned on this node, so NVLS multicast memory cannot be    *
+* bound. Collectives will still work over NVLink P2P, but NVLS-           *
+* accelerated NCCL is off and performance may be reduced. (Single-node   *
+* NVLS over POSIX-FD, e.g. MNNVL allreduce, is unaffected.)              *
+*                                                                        *
+* To enable NVLS: start nvidia-imex and expose                           *
+* /dev/nvidia-caps-imex-channels to the container. Set                   *
+* NCCL_NVLS_ENABLE=1 explicitly to override this fallback.               *
+**************************************************************************
+[TRT-LLM] [I] [thop][RANK 4] Detecting local TP group for rank 4
+[TRT-LLM] [I] [thop][RANK 6] Detecting local TP group for rank 6
+[TRT-LLM] [I] [thop][RANK 5] Detecting local TP group for rank 5
+[TRT-LLM] [I] [thop][RANK 7] Detecting local TP group for rank 7
+[TRT-LLM] [I] [thop][RANK 2] Detecting local TP group for rank 2
+[TRT-LLM] [I] [thop][RANK 3] Detecting local TP group for rank 3
+[TRT-LLM] [I] [thop][RANK 0] Detecting local TP group for rank 0
+[TRT-LLM] [I] [thop][RANK 1] Detecting local TP group for rank 1
+[TRT-LLM] [I] [thop][RANK 6] TP group is intra-node for rank 6
+[TRT-LLM] [I] [thop][RANK 1] TP group is intra-node for rank 1
+[TRT-LLM] [I] [thop][RANK 5] TP group is intra-node for rank 5
+[TRT-LLM] [I] [thop][RANK 7] TP group is intra-node for rank 7
+[TRT-LLM] [I] [thop][RANK 0] TP group is intra-node for rank 0
+[TRT-LLM] [I] [thop][RANK 4] TP group is intra-node for rank 4
+[TRT-LLM] [I] [thop][RANK 3] TP group is intra-node for rank 3
+[TRT-LLM] [I] [thop][RANK 2] TP group is intra-node for rank 2
+    1    173.83  118.90  +32%      9.90e-03
+[phase2] B=2: baseline ref + capture
+    2    182.83  122.17  +33%      8.77e-03
+[phase2] B=4: baseline ref + capture
+    4    196.67  135.20  +31%      8.33e-03
+[phase2] B=8: baseline ref + capture
+    8    218.29  163.57  +25%      2.63e-01
+[phase2] B=16: baseline ref + capture
+   16    264.53  215.61  +18%      2.32e-01
+[phase2] B=32: baseline ref + capture
+   32    300.25  249.29  +17%      2.13e-01
+[phase2] B=64: baseline ref + capture
+   64    358.98  316.10  +12%      2.42e-01
+[phase2] B=128: baseline ref + capture
+  128    411.98  379.75   +8%      2.47e-01
+Wrote /workspace/diffusion_inference/LLMDiveDeep/kimi_k3_layer/results/bench_moe_kimi_k3_tp8.csv
+Wrote /workspace/diffusion_inference/LLMDiveDeep/kimi_k3_layer/results/bench_moe_kimi_k3_tp8.png
+Wrote /workspace/diffusion_inference/LLMDiveDeep/kimi_k3_layer/results/bench_moe_kimi_k3_tp8.md

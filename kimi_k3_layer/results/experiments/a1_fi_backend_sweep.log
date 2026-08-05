@@ -1,0 +1,312 @@
+[1785884352.991798] [yikai-dev-pod-b200-0:240591:0]      ucp_worker.c:1485 UCX  ERROR uct_iface_open(rc_verbs/mlx5_10:1) failed: Address not valid
+[yikai-dev-pod-b200-0:240591] pml_ucx.c:314  Error: Failed to create UCP worker
+[1785884353.279020] [yikai-dev-pod-b200-0:240590:0]      ucp_worker.c:1485 UCX  ERROR uct_iface_open(rc_verbs/mlx5_10:1) failed: Address not valid
+[yikai-dev-pod-b200-0:240590] pml_ucx.c:314  Error: Failed to create UCP worker
+[1785884354.037850] [yikai-dev-pod-b200-0:240594:0]      ucp_worker.c:1485 UCX  ERROR uct_iface_open(rc_verbs/mlx5_10:1) failed: Address not valid
+[1785884354.037907] [yikai-dev-pod-b200-0:240592:0]      ucp_worker.c:1485 UCX  ERROR uct_iface_open(rc_verbs/mlx5_10:1) failed: Address not valid
+[1785884354.039900] [yikai-dev-pod-b200-0:240589:0]      ucp_worker.c:1485 UCX  ERROR uct_iface_open(rc_verbs/mlx5_10:1) failed: Address not valid
+[1785884354.061735] [yikai-dev-pod-b200-0:240588:0]      ucp_worker.c:1485 UCX  ERROR uct_iface_open(rc_verbs/mlx5_10:1) failed: Address not valid
+[yikai-dev-pod-b200-0:240594] pml_ucx.c:314  Error: Failed to create UCP worker
+[yikai-dev-pod-b200-0:240592] pml_ucx.c:314  Error: Failed to create UCP worker
+[yikai-dev-pod-b200-0:240589] pml_ucx.c:314  Error: Failed to create UCP worker
+[yikai-dev-pod-b200-0:240588] pml_ucx.c:314  Error: Failed to create UCP worker
+[1785884354.333586] [yikai-dev-pod-b200-0:240587:0]      ucp_worker.c:1485 UCX  ERROR uct_iface_open(rc_verbs/mlx5_10:1) failed: Address not valid
+[1785884354.333668] [yikai-dev-pod-b200-0:240593:0]      ucp_worker.c:1485 UCX  ERROR uct_iface_open(rc_verbs/mlx5_10:1) failed: Address not valid
+[yikai-dev-pod-b200-0:240587] pml_ucx.c:314  Error: Failed to create UCP worker
+[yikai-dev-pod-b200-0:240593] pml_ucx.c:314  Error: Failed to create UCP worker
+Skipping import of cpp extensions due to incompatible torch version 2.12.0a0+5aff3928d8.nv26.05 for torchao version 0.15.0             Please see https://github.com/pytorch/ao/issues/2919 for more info
+Skipping import of cpp extensions due to incompatible torch version 2.12.0a0+5aff3928d8.nv26.05 for torchao version 0.15.0             Please see https://github.com/pytorch/ao/issues/2919 for more info
+Skipping import of cpp extensions due to incompatible torch version 2.12.0a0+5aff3928d8.nv26.05 for torchao version 0.15.0             Please see https://github.com/pytorch/ao/issues/2919 for more info
+Skipping import of cpp extensions due to incompatible torch version 2.12.0a0+5aff3928d8.nv26.05 for torchao version 0.15.0             Please see https://github.com/pytorch/ao/issues/2919 for more info
+Skipping import of cpp extensions due to incompatible torch version 2.12.0a0+5aff3928d8.nv26.05 for torchao version 0.15.0             Please see https://github.com/pytorch/ao/issues/2919 for more info
+Skipping import of cpp extensions due to incompatible torch version 2.12.0a0+5aff3928d8.nv26.05 for torchao version 0.15.0             Please see https://github.com/pytorch/ao/issues/2919 for more info
+Skipping import of cpp extensions due to incompatible torch version 2.12.0a0+5aff3928d8.nv26.05 for torchao version 0.15.0             Please see https://github.com/pytorch/ao/issues/2919 for more info
+Skipping import of cpp extensions due to incompatible torch version 2.12.0a0+5aff3928d8.nv26.05 for torchao version 0.15.0             Please see https://github.com/pytorch/ao/issues/2919 for more info
+[TensorRT-LLM] TensorRT LLM version: 1.3.0rc23
+[TensorRT-LLM] TensorRT LLM version: 1.3.0rc23
+[TensorRT-LLM] TensorRT LLM version: 1.3.0rc23
+[TensorRT-LLM] TensorRT LLM version: 1.3.0rc23
+[TensorRT-LLM] TensorRT LLM version: 1.3.0rc23
+[TensorRT-LLM] TensorRT LLM version: 1.3.0rc23
+[TensorRT-LLM] TensorRT LLM version: 1.3.0rc23
+[TensorRT-LLM] TensorRT LLM version: 1.3.0rc23
+`torch_dtype` is deprecated! Use `dtype` instead!
+`torch_dtype` is deprecated! Use `dtype` instead!
+`torch_dtype` is deprecated! Use `dtype` instead!
+`torch_dtype` is deprecated! Use `dtype` instead!
+`torch_dtype` is deprecated! Use `dtype` instead!
+`torch_dtype` is deprecated! Use `dtype` instead!
+`torch_dtype` is deprecated! Use `dtype` instead!
+`torch_dtype` is deprecated! Use `dtype` instead!
+TP8 Kimi-K3 MoE (trtllm experts): TRT-LLM baseline vs b10 (configs: opt; fc1-shard active at B<=16)
+[phase1] B=1: capture opt
+/usr/local/lib/python3.12/dist-packages/torch/profiler/profiler.py:272: UserWarning: Warning: Profiler clears events at the end of each cycle.Only events from the current cycle will be reported.To keep events across cycles, set acc_events=True.
+  _warn_once(
+/usr/local/lib/python3.12/dist-packages/torch/profiler/profiler.py:272: UserWarning: Warning: Profiler clears events at the end of each cycle.Only events from the current cycle will be reported.To keep events across cycles, set acc_events=True.
+  _warn_once(
+/usr/local/lib/python3.12/dist-packages/torch/profiler/profiler.py:272: UserWarning: Warning: Profiler clears events at the end of each cycle.Only events from the current cycle will be reported.To keep events across cycles, set acc_events=True.
+  _warn_once(
+/usr/local/lib/python3.12/dist-packages/torch/profiler/profiler.py:272: UserWarning: Warning: Profiler clears events at the end of each cycle.Only events from the current cycle will be reported.To keep events across cycles, set acc_events=True.
+  _warn_once(
+/usr/local/lib/python3.12/dist-packages/torch/profiler/profiler.py:272: UserWarning: Warning: Profiler clears events at the end of each cycle.Only events from the current cycle will be reported.To keep events across cycles, set acc_events=True.
+  _warn_once(
+/usr/local/lib/python3.12/dist-packages/torch/profiler/profiler.py:272: UserWarning: Warning: Profiler clears events at the end of each cycle.Only events from the current cycle will be reported.To keep events across cycles, set acc_events=True.
+  _warn_once(
+/usr/local/lib/python3.12/dist-packages/torch/profiler/profiler.py:272: UserWarning: Warning: Profiler clears events at the end of each cycle.Only events from the current cycle will be reported.To keep events across cycles, set acc_events=True.
+  _warn_once(
+/usr/local/lib/python3.12/dist-packages/torch/profiler/profiler.py:272: UserWarning: Warning: Profiler clears events at the end of each cycle.Only events from the current cycle will be reported.To keep events across cycles, set acc_events=True.
+  _warn_once(
+USDT:2026-08-04 22:59:31 240594:240594 ActivityProfilerController.cpp:415] profiler_start
+USDT:2026-08-04 22:59:31 240592:240592 ActivityProfilerController.cpp:415] profiler_start
+USDT:2026-08-04 22:59:31 240587:240587 ActivityProfilerController.cpp:415] profiler_start
+USDT:2026-08-04 22:59:31 240588:240588 ActivityProfilerController.cpp:415] profiler_start
+USDT:2026-08-04 22:59:31 240593:240593 ActivityProfilerController.cpp:415] profiler_start
+USDT:2026-08-04 22:59:31 240589:240589 ActivityProfilerController.cpp:415] profiler_start
+USDT:2026-08-04 22:59:31 240591:240591 ActivityProfilerController.cpp:415] profiler_start
+USDT:2026-08-04 22:59:31 240590:240590 ActivityProfilerController.cpp:415] profiler_start
+USDT:2026-08-04 22:59:31 240591:240591 ActivityProfilerController.cpp:455] profiler_stop
+USDT:2026-08-04 22:59:31 240587:240587 ActivityProfilerController.cpp:455] profiler_stop
+USDT:2026-08-04 22:59:31 240593:240593 ActivityProfilerController.cpp:455] profiler_stop
+USDT:2026-08-04 22:59:31 240588:240588 ActivityProfilerController.cpp:455] profiler_stop
+USDT:2026-08-04 22:59:31 240592:240592 ActivityProfilerController.cpp:455] profiler_stop
+USDT:2026-08-04 22:59:31 240590:240590 ActivityProfilerController.cpp:455] profiler_stop
+USDT:2026-08-04 22:59:31 240594:240594 ActivityProfilerController.cpp:455] profiler_stop
+USDT:2026-08-04 22:59:31 240589:240589 ActivityProfilerController.cpp:455] profiler_stop
+[profile] wrote /workspace/diffusion_inference/LLMDiveDeep/kimi_k3_layer/results/moe_kimi_k3_tp8_b1_opt_graph.trace.json
+[phase1] B=2: capture opt
+[phase1] B=4: capture opt
+[phase1] B=8: capture opt
+USDT:2026-08-04 22:59:32 240591:240591 ActivityProfilerController.cpp:415] profiler_start
+USDT:2026-08-04 22:59:32 240592:240592 ActivityProfilerController.cpp:415] profiler_start
+USDT:2026-08-04 22:59:32 240593:240593 ActivityProfilerController.cpp:415] profiler_start
+USDT:2026-08-04 22:59:32 240588:240588 ActivityProfilerController.cpp:415] profiler_start
+USDT:2026-08-04 22:59:32 240594:240594 ActivityProfilerController.cpp:415] profiler_start
+USDT:2026-08-04 22:59:32 240590:240590 ActivityProfilerController.cpp:415] profiler_start
+USDT:2026-08-04 22:59:32 240587:240587 ActivityProfilerController.cpp:415] profiler_start
+USDT:2026-08-04 22:59:32 240589:240589 ActivityProfilerController.cpp:415] profiler_start
+USDT:2026-08-04 22:59:32 240591:240591 ActivityProfilerController.cpp:455] profiler_stop
+USDT:2026-08-04 22:59:32 240590:240590 ActivityProfilerController.cpp:455] profiler_stop
+USDT:2026-08-04 22:59:32 240588:240588 ActivityProfilerController.cpp:455] profiler_stop
+USDT:2026-08-04 22:59:32 240593:240593 ActivityProfilerController.cpp:455] profiler_stop
+USDT:2026-08-04 22:59:32 240594:240594 ActivityProfilerController.cpp:455] profiler_stop
+USDT:2026-08-04 22:59:32 240589:240589 ActivityProfilerController.cpp:455] profiler_stop
+USDT:2026-08-04 22:59:32 240587:240587 ActivityProfilerController.cpp:455] profiler_stop
+USDT:2026-08-04 22:59:32 240592:240592 ActivityProfilerController.cpp:455] profiler_stop
+[profile] wrote /workspace/diffusion_inference/LLMDiveDeep/kimi_k3_layer/results/moe_kimi_k3_tp8_b8_opt_graph.trace.json
+[phase1] B=16: capture opt
+USDT:2026-08-04 22:59:32 240591:240591 ActivityProfilerController.cpp:415] profiler_start
+USDT:2026-08-04 22:59:32 240592:240592 ActivityProfilerController.cpp:415] profiler_start
+USDT:2026-08-04 22:59:32 240590:240590 ActivityProfilerController.cpp:415] profiler_start
+USDT:2026-08-04 22:59:32 240588:240588 ActivityProfilerController.cpp:415] profiler_start
+USDT:2026-08-04 22:59:32 240594:240594 ActivityProfilerController.cpp:415] profiler_start
+USDT:2026-08-04 22:59:32 240587:240587 ActivityProfilerController.cpp:415] profiler_start
+USDT:2026-08-04 22:59:32 240593:240593 ActivityProfilerController.cpp:415] profiler_start
+USDT:2026-08-04 22:59:32 240589:240589 ActivityProfilerController.cpp:415] profiler_start
+USDT:2026-08-04 22:59:32 240591:240591 ActivityProfilerController.cpp:455] profiler_stop
+USDT:2026-08-04 22:59:32 240592:240592 ActivityProfilerController.cpp:455] profiler_stop
+USDT:2026-08-04 22:59:32 240590:240590 ActivityProfilerController.cpp:455] profiler_stop
+USDT:2026-08-04 22:59:32 240587:240587 ActivityProfilerController.cpp:455] profiler_stop
+USDT:2026-08-04 22:59:32 240589:240589 ActivityProfilerController.cpp:455] profiler_stop
+USDT:2026-08-04 22:59:32 240594:240594 ActivityProfilerController.cpp:455] profiler_stop
+USDT:2026-08-04 22:59:32 240588:240588 ActivityProfilerController.cpp:455] profiler_stop
+USDT:2026-08-04 22:59:32 240593:240593 ActivityProfilerController.cpp:455] profiler_stop
+[profile] wrote /workspace/diffusion_inference/LLMDiveDeep/kimi_k3_layer/results/moe_kimi_k3_tp8_b16_opt_graph.trace.json
+[phase1] B=32: capture opt
+[phase1] B=64: capture opt
+    B   base_us        opt_us      err(opt)
+[phase2] B=1: baseline ref + capture
+[TRT-LLM] [W] [runtime][RANK 0] 
+**************************************************************************
+* NVLS (NVLink SHARP) DISABLED for NCCL -- falling back to NVLink P2P     *
+**************************************************************************
+* The GPU advertises multicast support, but the NVLink fabric/IMEX plane *
+* is NOT provisioned on this node, so NVLS multicast memory cannot be    *
+* bound. Collectives will still work over NVLink P2P, but NVLS-           *
+* accelerated NCCL is off and performance may be reduced. (Single-node   *
+* NVLS over POSIX-FD, e.g. MNNVL allreduce, is unaffected.)              *
+*                                                                        *
+* To enable NVLS: start nvidia-imex and expose                           *
+* /dev/nvidia-caps-imex-channels to the container. Set                   *
+* NCCL_NVLS_ENABLE=1 explicitly to override this fallback.               *
+**************************************************************************
+[TRT-LLM] [W] [runtime][RANK 1] 
+**************************************************************************
+* NVLS (NVLink SHARP) DISABLED for NCCL -- falling back to NVLink P2P     *
+**************************************************************************
+* The GPU advertises multicast support, but the NVLink fabric/IMEX plane *
+* is NOT provisioned on this node, so NVLS multicast memory cannot be    *
+* bound. Collectives will still work over NVLink P2P, but NVLS-           *
+* accelerated NCCL is off and performance may be reduced. (Single-node   *
+* NVLS over POSIX-FD, e.g. MNNVL allreduce, is unaffected.)              *
+*                                                                        *
+* To enable NVLS: start nvidia-imex and expose                           *
+* /dev/nvidia-caps-imex-channels to the container. Set                   *
+* NCCL_NVLS_ENABLE=1 explicitly to override this fallback.               *
+**************************************************************************
+[TRT-LLM] [W] [runtime][RANK 3] 
+**************************************************************************
+* NVLS (NVLink SHARP) DISABLED for NCCL -- falling back to NVLink P2P     *
+**************************************************************************
+* The GPU advertises multicast support, but the NVLink fabric/IMEX plane *
+* is NOT provisioned on this node, so NVLS multicast memory cannot be    *
+* bound. Collectives will still work over NVLink P2P, but NVLS-           *
+* accelerated NCCL is off and performance may be reduced. (Single-node   *
+* NVLS over POSIX-FD, e.g. MNNVL allreduce, is unaffected.)              *
+*                                                                        *
+* To enable NVLS: start nvidia-imex and expose                           *
+* /dev/nvidia-caps-imex-channels to the container. Set                   *
+* NCCL_NVLS_ENABLE=1 explicitly to override this fallback.               *
+**************************************************************************
+[TRT-LLM] [W] [runtime][RANK 6] 
+**************************************************************************
+* NVLS (NVLink SHARP) DISABLED for NCCL -- falling back to NVLink P2P     *
+**************************************************************************
+* The GPU advertises multicast support, but the NVLink fabric/IMEX plane *
+* is NOT provisioned on this node, so NVLS multicast memory cannot be    *
+* bound. Collectives will still work over NVLink P2P, but NVLS-           *
+* accelerated NCCL is off and performance may be reduced. (Single-node   *
+* NVLS over POSIX-FD, e.g. MNNVL allreduce, is unaffected.)              *
+*                                                                        *
+* To enable NVLS: start nvidia-imex and expose                           *
+* /dev/nvidia-caps-imex-channels to the container. Set                   *
+* NCCL_NVLS_ENABLE=1 explicitly to override this fallback.               *
+**************************************************************************
+[TRT-LLM] [W] [runtime][RANK 7] 
+**************************************************************************
+* NVLS (NVLink SHARP) DISABLED for NCCL -- falling back to NVLink P2P     *
+**************************************************************************
+* The GPU advertises multicast support, but the NVLink fabric/IMEX plane *
+* is NOT provisioned on this node, so NVLS multicast memory cannot be    *
+* bound. Collectives will still work over NVLink P2P, but NVLS-           *
+* accelerated NCCL is off and performance may be reduced. (Single-node   *
+* NVLS over POSIX-FD, e.g. MNNVL allreduce, is unaffected.)              *
+*                                                                        *
+* To enable NVLS: start nvidia-imex and expose                           *
+* /dev/nvidia-caps-imex-channels to the container. Set                   *
+* NCCL_NVLS_ENABLE=1 explicitly to override this fallback.               *
+**************************************************************************
+[TRT-LLM] [W] [runtime][RANK 2] 
+**************************************************************************
+* NVLS (NVLink SHARP) DISABLED for NCCL -- falling back to NVLink P2P     *
+**************************************************************************
+* The GPU advertises multicast support, but the NVLink fabric/IMEX plane *
+* is NOT provisioned on this node, so NVLS multicast memory cannot be    *
+* bound. Collectives will still work over NVLink P2P, but NVLS-           *
+* accelerated NCCL is off and performance may be reduced. (Single-node   *
+* NVLS over POSIX-FD, e.g. MNNVL allreduce, is unaffected.)              *
+*                                                                        *
+* To enable NVLS: start nvidia-imex and expose                           *
+* /dev/nvidia-caps-imex-channels to the container. Set                   *
+* NCCL_NVLS_ENABLE=1 explicitly to override this fallback.               *
+**************************************************************************
+[TRT-LLM] [W] [runtime][RANK 5] 
+**************************************************************************
+* NVLS (NVLink SHARP) DISABLED for NCCL -- falling back to NVLink P2P     *
+**************************************************************************
+* The GPU advertises multicast support, but the NVLink fabric/IMEX plane *
+* is NOT provisioned on this node, so NVLS multicast memory cannot be    *
+* bound. Collectives will still work over NVLink P2P, but NVLS-           *
+* accelerated NCCL is off and performance may be reduced. (Single-node   *
+* NVLS over POSIX-FD, e.g. MNNVL allreduce, is unaffected.)              *
+*                                                                        *
+* To enable NVLS: start nvidia-imex and expose                           *
+* /dev/nvidia-caps-imex-channels to the container. Set                   *
+* NCCL_NVLS_ENABLE=1 explicitly to override this fallback.               *
+**************************************************************************
+[TRT-LLM] [W] [runtime][RANK 4] 
+**************************************************************************
+* NVLS (NVLink SHARP) DISABLED for NCCL -- falling back to NVLink P2P     *
+**************************************************************************
+* The GPU advertises multicast support, but the NVLink fabric/IMEX plane *
+* is NOT provisioned on this node, so NVLS multicast memory cannot be    *
+* bound. Collectives will still work over NVLink P2P, but NVLS-           *
+* accelerated NCCL is off and performance may be reduced. (Single-node   *
+* NVLS over POSIX-FD, e.g. MNNVL allreduce, is unaffected.)              *
+*                                                                        *
+* To enable NVLS: start nvidia-imex and expose                           *
+* /dev/nvidia-caps-imex-channels to the container. Set                   *
+* NCCL_NVLS_ENABLE=1 explicitly to override this fallback.               *
+**************************************************************************
+[TRT-LLM] [I] [thop][RANK 6] Detecting local TP group for rank 6
+[TRT-LLM] [I] [thop][RANK 4] Detecting local TP group for rank 4
+[TRT-LLM] [I] [thop][RANK 7] Detecting local TP group for rank 7
+[TRT-LLM] [I] [thop][RANK 5] Detecting local TP group for rank 5
+[TRT-LLM] [I] [thop][RANK 3] Detecting local TP group for rank 3
+[TRT-LLM] [I] [thop][RANK 0] Detecting local TP group for rank 0
+[TRT-LLM] [I] [thop][RANK 1] Detecting local TP group for rank 1
+[TRT-LLM] [I] [thop][RANK 2] Detecting local TP group for rank 2
+[TRT-LLM] [I] [thop][RANK 5] TP group is intra-node for rank 5
+[TRT-LLM] [I] [thop][RANK 0] TP group is intra-node for rank 0
+[TRT-LLM] [I] [thop][RANK 7] TP group is intra-node for rank 7
+[TRT-LLM] [I] [thop][RANK 2] TP group is intra-node for rank 2
+[TRT-LLM] [I] [thop][RANK 4] TP group is intra-node for rank 4
+[TRT-LLM] [I] [thop][RANK 3] TP group is intra-node for rank 3
+[TRT-LLM] [I] [thop][RANK 6] TP group is intra-node for rank 6
+[TRT-LLM] [I] [thop][RANK 1] TP group is intra-node for rank 1
+USDT:2026-08-04 22:59:38 240589:240589 ActivityProfilerController.cpp:415] profiler_start
+USDT:2026-08-04 22:59:38 240592:240592 ActivityProfilerController.cpp:415] profiler_start
+USDT:2026-08-04 22:59:38 240587:240587 ActivityProfilerController.cpp:415] profiler_start
+USDT:2026-08-04 22:59:38 240593:240593 ActivityProfilerController.cpp:415] profiler_start
+USDT:2026-08-04 22:59:38 240590:240590 ActivityProfilerController.cpp:415] profiler_start
+USDT:2026-08-04 22:59:38 240594:240594 ActivityProfilerController.cpp:415] profiler_start
+USDT:2026-08-04 22:59:38 240591:240591 ActivityProfilerController.cpp:415] profiler_start
+USDT:2026-08-04 22:59:38 240588:240588 ActivityProfilerController.cpp:415] profiler_start
+USDT:2026-08-04 22:59:38 240593:240593 ActivityProfilerController.cpp:455] profiler_stop
+USDT:2026-08-04 22:59:38 240589:240589 ActivityProfilerController.cpp:455] profiler_stop
+USDT:2026-08-04 22:59:38 240587:240587 ActivityProfilerController.cpp:455] profiler_stop
+USDT:2026-08-04 22:59:38 240594:240594 ActivityProfilerController.cpp:455] profiler_stop
+USDT:2026-08-04 22:59:38 240591:240591 ActivityProfilerController.cpp:455] profiler_stop
+USDT:2026-08-04 22:59:38 240590:240590 ActivityProfilerController.cpp:455] profiler_stop
+USDT:2026-08-04 22:59:38 240592:240592 ActivityProfilerController.cpp:455] profiler_stop
+USDT:2026-08-04 22:59:38 240588:240588 ActivityProfilerController.cpp:455] profiler_stop
+[profile] wrote /workspace/diffusion_inference/LLMDiveDeep/kimi_k3_layer/results/moe_kimi_k3_tp8_b1_base_graph.trace.json
+    1    135.35   82.03  +39%      9.90e-03
+[phase2] B=2: baseline ref + capture
+    2    138.33   91.21  +34%      8.77e-03
+[phase2] B=4: baseline ref + capture
+    4    141.22   94.54  +33%      8.44e-03
+[phase2] B=8: baseline ref + capture
+USDT:2026-08-04 22:59:39 240592:240592 ActivityProfilerController.cpp:415] profiler_start
+USDT:2026-08-04 22:59:39 240589:240589 ActivityProfilerController.cpp:415] profiler_start
+USDT:2026-08-04 22:59:39 240594:240594 ActivityProfilerController.cpp:415] profiler_start
+USDT:2026-08-04 22:59:39 240588:240588 ActivityProfilerController.cpp:415] profiler_start
+USDT:2026-08-04 22:59:39 240590:240590 ActivityProfilerController.cpp:415] profiler_start
+USDT:2026-08-04 22:59:39 240593:240593 ActivityProfilerController.cpp:415] profiler_start
+USDT:2026-08-04 22:59:39 240587:240587 ActivityProfilerController.cpp:415] profiler_start
+USDT:2026-08-04 22:59:39 240591:240591 ActivityProfilerController.cpp:415] profiler_start
+USDT:2026-08-04 22:59:39 240594:240594 ActivityProfilerController.cpp:455] profiler_stop
+USDT:2026-08-04 22:59:39 240588:240588 ActivityProfilerController.cpp:455] profiler_stop
+USDT:2026-08-04 22:59:39 240589:240589 ActivityProfilerController.cpp:455] profiler_stop
+USDT:2026-08-04 22:59:39 240587:240587 ActivityProfilerController.cpp:455] profiler_stop
+USDT:2026-08-04 22:59:39 240592:240592 ActivityProfilerController.cpp:455] profiler_stop
+USDT:2026-08-04 22:59:39 240593:240593 ActivityProfilerController.cpp:455] profiler_stop
+USDT:2026-08-04 22:59:39 240591:240591 ActivityProfilerController.cpp:455] profiler_stop
+USDT:2026-08-04 22:59:39 240590:240590 ActivityProfilerController.cpp:455] profiler_stop
+[profile] wrote /workspace/diffusion_inference/LLMDiveDeep/kimi_k3_layer/results/moe_kimi_k3_tp8_b8_base_graph.trace.json
+    8    152.11  111.85  +26%      2.58e-01
+[phase2] B=16: baseline ref + capture
+USDT:2026-08-04 22:59:40 240589:240589 ActivityProfilerController.cpp:415] profiler_start
+USDT:2026-08-04 22:59:40 240588:240588 ActivityProfilerController.cpp:415] profiler_start
+USDT:2026-08-04 22:59:40 240594:240594 ActivityProfilerController.cpp:415] profiler_start
+USDT:2026-08-04 22:59:40 240587:240587 ActivityProfilerController.cpp:415] profiler_start
+USDT:2026-08-04 22:59:40 240593:240593 ActivityProfilerController.cpp:415] profiler_start
+USDT:2026-08-04 22:59:40 240590:240590 ActivityProfilerController.cpp:415] profiler_start
+USDT:2026-08-04 22:59:40 240592:240592 ActivityProfilerController.cpp:415] profiler_start
+USDT:2026-08-04 22:59:40 240591:240591 ActivityProfilerController.cpp:415] profiler_start
+USDT:2026-08-04 22:59:40 240588:240588 ActivityProfilerController.cpp:455] profiler_stop
+USDT:2026-08-04 22:59:40 240594:240594 ActivityProfilerController.cpp:455] profiler_stop
+USDT:2026-08-04 22:59:40 240590:240590 ActivityProfilerController.cpp:455] profiler_stop
+USDT:2026-08-04 22:59:40 240593:240593 ActivityProfilerController.cpp:455] profiler_stop
+USDT:2026-08-04 22:59:40 240587:240587 ActivityProfilerController.cpp:455] profiler_stop
+USDT:2026-08-04 22:59:40 240591:240591 ActivityProfilerController.cpp:455] profiler_stop
+USDT:2026-08-04 22:59:40 240592:240592 ActivityProfilerController.cpp:455] profiler_stop
+USDT:2026-08-04 22:59:40 240589:240589 ActivityProfilerController.cpp:455] profiler_stop
+[profile] wrote /workspace/diffusion_inference/LLMDiveDeep/kimi_k3_layer/results/moe_kimi_k3_tp8_b16_base_graph.trace.json
+   16    157.70  125.37  +21%      2.33e-01
+[phase2] B=32: baseline ref + capture
+   32    175.36  152.88  +13%      2.14e-01
+[phase2] B=64: baseline ref + capture
+   64    186.13  168.20  +10%      2.42e-01
+Wrote /workspace/diffusion_inference/LLMDiveDeep/kimi_k3_layer/results/bench_moe_kimi_k3_tp8.csv
+Wrote /workspace/diffusion_inference/LLMDiveDeep/kimi_k3_layer/results/bench_moe_kimi_k3_tp8.png
+Wrote /workspace/diffusion_inference/LLMDiveDeep/kimi_k3_layer/results/bench_moe_kimi_k3_tp8.md
