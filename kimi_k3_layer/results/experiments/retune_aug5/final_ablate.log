@@ -1,0 +1,821 @@
+TP8 Kimi-K3 MoE (trtllm experts): TRT-LLM baseline vs b10 (configs: opt, -merged, -routing, -fc1shard, -fc2shard, -reftail, -finfuse, -merge3, +customrs, -overlap, -shared, -all; fc1-shard active at B<=1000000000)
+[phase1] B=1: capture opt
+[phase1] B=1: capture -merged
+[phase1] B=1: capture -routing
+[phase1] B=1: capture -fc1shard
+[phase1] B=1: capture -fc2shard
+[TRT-LLM] [W] [runtime][RANK 0] 
+**************************************************************************
+* NVLS (NVLink SHARP) DISABLED for NCCL -- falling back to NVLink P2P     *
+**************************************************************************
+* The GPU advertises multicast support, but the NVLink fabric/IMEX plane *
+* is NOT provisioned on this node, so NVLS multicast memory cannot be    *
+* bound. Collectives will still work over NVLink P2P, but NVLS-           *
+* accelerated NCCL is off and performance may be reduced. (Single-node   *
+* NVLS over POSIX-FD, e.g. MNNVL allreduce, is unaffected.)              *
+*                                                                        *
+* To enable NVLS: start nvidia-imex and expose                           *
+* /dev/nvidia-caps-imex-channels to the container. Set                   *
+* NCCL_NVLS_ENABLE=1 explicitly to override this fallback.               *
+**************************************************************************
+[TRT-LLM] [W] [runtime][RANK 1] 
+**************************************************************************
+* NVLS (NVLink SHARP) DISABLED for NCCL -- falling back to NVLink P2P     *
+**************************************************************************
+* The GPU advertises multicast support, but the NVLink fabric/IMEX plane *
+* is NOT provisioned on this node, so NVLS multicast memory cannot be    *
+* bound. Collectives will still work over NVLink P2P, but NVLS-           *
+* accelerated NCCL is off and performance may be reduced. (Single-node   *
+* NVLS over POSIX-FD, e.g. MNNVL allreduce, is unaffected.)              *
+*                                                                        *
+* To enable NVLS: start nvidia-imex and expose                           *
+* /dev/nvidia-caps-imex-channels to the container. Set                   *
+* NCCL_NVLS_ENABLE=1 explicitly to override this fallback.               *
+**************************************************************************
+[TRT-LLM] [W] [runtime][RANK 4] 
+**************************************************************************
+* NVLS (NVLink SHARP) DISABLED for NCCL -- falling back to NVLink P2P     *
+**************************************************************************
+* The GPU advertises multicast support, but the NVLink fabric/IMEX plane *
+* is NOT provisioned on this node, so NVLS multicast memory cannot be    *
+* bound. Collectives will still work over NVLink P2P, but NVLS-           *
+* accelerated NCCL is off and performance may be reduced. (Single-node   *
+* NVLS over POSIX-FD, e.g. MNNVL allreduce, is unaffected.)              *
+*                                                                        *
+* To enable NVLS: start nvidia-imex and expose                           *
+* /dev/nvidia-caps-imex-channels to the container. Set                   *
+* NCCL_NVLS_ENABLE=1 explicitly to override this fallback.               *
+**************************************************************************
+[TRT-LLM] [W] [runtime][RANK 7] 
+**************************************************************************
+* NVLS (NVLink SHARP) DISABLED for NCCL -- falling back to NVLink P2P     *
+**************************************************************************
+* The GPU advertises multicast support, but the NVLink fabric/IMEX plane *
+* is NOT provisioned on this node, so NVLS multicast memory cannot be    *
+* bound. Collectives will still work over NVLink P2P, but NVLS-           *
+* accelerated NCCL is off and performance may be reduced. (Single-node   *
+* NVLS over POSIX-FD, e.g. MNNVL allreduce, is unaffected.)              *
+*                                                                        *
+* To enable NVLS: start nvidia-imex and expose                           *
+* /dev/nvidia-caps-imex-channels to the container. Set                   *
+* NCCL_NVLS_ENABLE=1 explicitly to override this fallback.               *
+**************************************************************************
+[TRT-LLM] [W] [runtime][RANK 3] 
+**************************************************************************
+* NVLS (NVLink SHARP) DISABLED for NCCL -- falling back to NVLink P2P     *
+**************************************************************************
+* The GPU advertises multicast support, but the NVLink fabric/IMEX plane *
+* is NOT provisioned on this node, so NVLS multicast memory cannot be    *
+* bound. Collectives will still work over NVLink P2P, but NVLS-           *
+* accelerated NCCL is off and performance may be reduced. (Single-node   *
+* NVLS over POSIX-FD, e.g. MNNVL allreduce, is unaffected.)              *
+*                                                                        *
+* To enable NVLS: start nvidia-imex and expose                           *
+* /dev/nvidia-caps-imex-channels to the container. Set                   *
+* NCCL_NVLS_ENABLE=1 explicitly to override this fallback.               *
+**************************************************************************
+[TRT-LLM] [W] [runtime][RANK 6] 
+**************************************************************************
+* NVLS (NVLink SHARP) DISABLED for NCCL -- falling back to NVLink P2P     *
+**************************************************************************
+* The GPU advertises multicast support, but the NVLink fabric/IMEX plane *
+* is NOT provisioned on this node, so NVLS multicast memory cannot be    *
+* bound. Collectives will still work over NVLink P2P, but NVLS-           *
+* accelerated NCCL is off and performance may be reduced. (Single-node   *
+* NVLS over POSIX-FD, e.g. MNNVL allreduce, is unaffected.)              *
+*                                                                        *
+* To enable NVLS: start nvidia-imex and expose                           *
+* /dev/nvidia-caps-imex-channels to the container. Set                   *
+* NCCL_NVLS_ENABLE=1 explicitly to override this fallback.               *
+**************************************************************************
+[TRT-LLM] [W] [runtime][RANK 2] 
+**************************************************************************
+* NVLS (NVLink SHARP) DISABLED for NCCL -- falling back to NVLink P2P     *
+**************************************************************************
+* The GPU advertises multicast support, but the NVLink fabric/IMEX plane *
+* is NOT provisioned on this node, so NVLS multicast memory cannot be    *
+* bound. Collectives will still work over NVLink P2P, but NVLS-           *
+* accelerated NCCL is off and performance may be reduced. (Single-node   *
+* NVLS over POSIX-FD, e.g. MNNVL allreduce, is unaffected.)              *
+*                                                                        *
+* To enable NVLS: start nvidia-imex and expose                           *
+* /dev/nvidia-caps-imex-channels to the container. Set                   *
+* NCCL_NVLS_ENABLE=1 explicitly to override this fallback.               *
+**************************************************************************
+[TRT-LLM] [W] [runtime][RANK 5] 
+**************************************************************************
+* NVLS (NVLink SHARP) DISABLED for NCCL -- falling back to NVLink P2P     *
+**************************************************************************
+* The GPU advertises multicast support, but the NVLink fabric/IMEX plane *
+* is NOT provisioned on this node, so NVLS multicast memory cannot be    *
+* bound. Collectives will still work over NVLink P2P, but NVLS-           *
+* accelerated NCCL is off and performance may be reduced. (Single-node   *
+* NVLS over POSIX-FD, e.g. MNNVL allreduce, is unaffected.)              *
+*                                                                        *
+* To enable NVLS: start nvidia-imex and expose                           *
+* /dev/nvidia-caps-imex-channels to the container. Set                   *
+* NCCL_NVLS_ENABLE=1 explicitly to override this fallback.               *
+**************************************************************************
+[TRT-LLM] [I] [thop][RANK 6] Detecting local TP group for rank 6
+[TRT-LLM] [I] [thop][RANK 5] Detecting local TP group for rank 5
+[TRT-LLM] [I] [thop][RANK 7] Detecting local TP group for rank 7
+[TRT-LLM] [I] [thop][RANK 2] Detecting local TP group for rank 2
+[TRT-LLM] [I] [thop][RANK 1] Detecting local TP group for rank 1
+[TRT-LLM] [I] [thop][RANK 0] Detecting local TP group for rank 0
+[TRT-LLM] [I] [thop][RANK 3] Detecting local TP group for rank 3
+[TRT-LLM] [I] [thop][RANK 4] Detecting local TP group for rank 4
+[TRT-LLM] [I] [thop][RANK 0] TP group is intra-node for rank 0
+[TRT-LLM] [I] [thop][RANK 5] TP group is intra-node for rank 5
+[TRT-LLM] [I] [thop][RANK 7] TP group is intra-node for rank 7
+[TRT-LLM] [I] [thop][RANK 1] TP group is intra-node for rank 1
+[TRT-LLM] [I] [thop][RANK 6] TP group is intra-node for rank 6
+[TRT-LLM] [I] [thop][RANK 3] TP group is intra-node for rank 3
+[TRT-LLM] [I] [thop][RANK 2] TP group is intra-node for rank 2
+[TRT-LLM] [I] [thop][RANK 4] TP group is intra-node for rank 4
+[phase1] B=1: capture -reftail
+[phase1] B=1: capture -finfuse
+[phase1] B=1: capture -merge3
+[phase1] B=1: capture +customrs
+[phase1] B=1: capture -overlap
+[phase1] B=1: capture -shared
+[phase1] B=1: capture -all
+[phase1] B=2: capture opt
+[phase1] B=2: capture -merged
+[phase1] B=2: capture -routing
+[phase1] B=2: capture -fc1shard
+[phase1] B=2: capture -fc2shard
+[phase1] B=2: capture -reftail
+[phase1] B=2: capture -finfuse
+[phase1] B=2: capture -merge3
+[phase1] B=2: capture +customrs
+[phase1] B=2: capture -overlap
+[phase1] B=2: capture -shared
+[phase1] B=2: capture -all
+[phase1] B=4: capture opt
+[phase1] B=4: capture -merged
+[phase1] B=4: capture -routing
+[phase1] B=4: capture -fc1shard
+[phase1] B=4: capture -fc2shard
+[phase1] B=4: capture -reftail
+[phase1] B=4: capture -finfuse
+[phase1] B=4: capture -merge3
+[phase1] B=4: capture +customrs
+[phase1] B=4: capture -overlap
+[phase1] B=4: capture -shared
+[phase1] B=4: capture -all
+[phase1] B=8: capture opt
+[phase1] B=8: capture -merged
+[phase1] B=8: capture -routing
+[phase1] B=8: capture -fc1shard
+[phase1] B=8: capture -fc2shard
+[phase1] B=8: capture -reftail
+[phase1] B=8: capture -finfuse
+[phase1] B=8: capture -merge3
+[phase1] B=8: capture +customrs
+[phase1] B=8: capture -overlap
+[phase1] B=8: capture -shared
+[phase1] B=8: capture -all
+[phase1] B=16: capture opt
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+[phase1] B=16: capture -merged
+[phase1] B=16: capture -routing
+[phase1] B=16: capture -fc1shard
+[phase1] B=16: capture -fc2shard
+[phase1] B=16: capture -reftail
+[phase1] B=16: capture -finfuse
+[phase1] B=16: capture -merge3
+[phase1] B=16: capture +customrs
+[phase1] B=16: capture -overlap
+[phase1] B=16: capture -shared
+[phase1] B=16: capture -all
+[phase1] B=32: capture opt
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+[phase1] B=32: capture -merged
+[phase1] B=32: capture -routing
+[phase1] B=32: capture -fc1shard
+[phase1] B=32: capture -fc2shard
+[phase1] B=32: capture -reftail
+[phase1] B=32: capture -finfuse
+[phase1] B=32: capture -merge3
+[phase1] B=32: capture +customrs
+[phase1] B=32: capture -overlap
+[phase1] B=32: capture -shared
+[phase1] B=32: capture -all
+[phase1] B=64: capture opt
+[phase1] B=64: capture -merged
+[phase1] B=64: capture -routing
+[phase1] B=64: capture -fc1shard
+[phase1] B=64: capture -fc2shard
+[phase1] B=64: capture -reftail
+[phase1] B=64: capture -finfuse
+[phase1] B=64: capture -merge3
+[phase1] B=64: capture +customrs
+[phase1] B=64: capture -overlap
+[phase1] B=64: capture -shared
+[phase1] B=64: capture -all
+[phase1] B=80: capture opt
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+/usr/local/lib/python3.12/dist-packages/nvidia_cutlass_dsl/python_packages/cutlass/cute/core.py:5789: DeprecationWarning: Use explicit `struct.scalar.ptr` for pointer instead.
+  warnings.warn(
+[phase1] B=80: capture -merged
+[phase1] B=80: capture -routing
+[phase1] B=80: capture -fc1shard
+[phase1] B=80: capture -fc2shard
+[phase1] B=80: capture -reftail
+[phase1] B=80: capture -finfuse
+[phase1] B=80: capture -merge3
+[phase1] B=80: capture +customrs
+[phase1] B=80: capture -overlap
+[phase1] B=80: capture -shared
+[phase1] B=80: capture -all
+    B   base_us        opt_us    -merged_us   -routing_us  -fc1shard_us  -fc2shard_us   -reftail_us   -finfuse_us    -merge3_us  +customrs_us   -overlap_us    -shared_us       -all_us      err(opt)  err(-merged) err(-routing) err(-fc1shard) err(-fc2shard) err(-reftail) err(-finfuse)  err(-merge3) err(+customrs) err(-overlap)  err(-shared)     err(-all)
+[phase2] B=1: baseline ref + capture
+    1     77.28   53.13  +31%   56.28  +27%   56.71  +27%   60.82  +21%   62.17  +20%   51.15  +34%   51.11  +34%   53.28  +31%   52.77  +32%   63.01  +18%   51.91  +33%   90.13  -17%      9.90e-03      9.90e-03      9.90e-03      9.90e-03      4.95e-03      9.90e-03      9.90e-03      9.90e-03      9.90e-03      9.90e-03      8.61e-01      4.95e-03
+[phase2] B=2: baseline ref + capture
+    2     80.05   54.00  +33%   57.03  +29%   61.52  +23%   63.68  +20%   69.30  +13%   53.99  +33%   54.07  +32%   54.11  +32%   55.45  +31%   63.93  +20%   52.71  +34%   97.46  -22%      8.73e-03      8.73e-03      8.73e-03      8.73e-03      0.00e+00      8.73e-03      8.73e-03      8.73e-03      8.73e-03      8.73e-03      6.46e-01      0.00e+00
+[phase2] B=4: baseline ref + capture
+    4     82.00   56.26  +31%   60.41  +26%   65.48  +20%   65.63  +20%   71.46  +13%   56.25  +31%   56.24  +31%   56.54  +31%   57.98  +29%   66.31  +19%   54.17  +34%   98.14  -20%      8.47e-03      8.47e-03      8.47e-03      8.47e-03      8.47e-03      8.47e-03      8.47e-03      8.47e-03      8.47e-03      8.47e-03      6.88e-01      8.47e-03
+[phase2] B=8: baseline ref + capture
+    8     83.35   65.67  +21%   73.52  +12%   74.08  +11%   73.86  +11%   80.70   +3%   65.70  +21%   65.70  +21%   68.66  +18%   67.43  +19%   76.76   +8%   60.54  +27%  100.74  -21%      2.60e-01      2.60e-01      2.60e-01      2.60e-01      2.60e-01      2.60e-01      2.60e-01      2.60e-01      2.58e-01      2.60e-01      7.56e-01      2.60e-01
+[phase2] B=16: baseline ref + capture
+   16     92.33   78.43  +15%   90.31   +2%   90.59   +2%   81.44  +12%   78.45  +15%   80.02  +13%   81.16  +12%   86.35   +6%   78.39  +15%   92.07   +0%   72.76  +21%  110.75  -20%      2.31e-01      2.31e-01      2.31e-01      2.31e-01      2.31e-01      2.29e-01      2.31e-01      2.31e-01      2.31e-01      2.31e-01      7.33e-01      2.31e-01
+[phase2] B=32: baseline ref + capture
+   32    106.92   90.50  +15%   97.60   +9%  101.24   +5%   93.12  +13%   90.49  +15%   92.96  +13%   91.66  +14%   94.10  +12%   90.43  +15%  107.61   -1%   89.02  +17%  125.79  -18%      2.16e-01      2.16e-01      2.15e-01      2.16e-01      2.16e-01      2.15e-01      2.15e-01      2.16e-01      2.16e-01      2.16e-01      7.71e-01      2.15e-01
+[phase2] B=64: baseline ref + capture
+   64    126.82  115.42   +9%  116.25   +8%  120.18   +5%  119.35   +6%  127.38   -0%  115.43   +9%  115.58   +9%  115.48   +9%  115.02   +9%  126.27   +0%  110.90  +13%  144.47  -14%      2.40e-01      2.40e-01      2.40e-01      2.40e-01      2.41e-01      2.40e-01      2.40e-01      2.40e-01      2.40e-01      2.40e-01      8.46e-01      2.41e-01
+[phase2] B=80: baseline ref + capture
+   80    143.24  119.71  +16%  126.91  +11%  119.72  +16%  123.60  +14%  119.67  +16%  137.65   +4%  119.74  +16%  119.73  +16%  119.73  +16%  141.21   +1%  106.13  +26%  158.15  -10%      2.40e-01      2.40e-01      2.40e-01      2.43e-01      2.40e-01      2.40e-01      2.40e-01      2.40e-01      2.40e-01      2.40e-01      7.35e-01      2.39e-01
+Wrote /workspace/diffusion_inference/LLMDiveDeep/kimi_k3_layer/results/bench_moe_kimi_k3_tp8.csv
+Wrote /workspace/diffusion_inference/LLMDiveDeep/kimi_k3_layer/results/bench_moe_kimi_k3_tp8.png
+Wrote /workspace/diffusion_inference/LLMDiveDeep/kimi_k3_layer/results/bench_moe_kimi_k3_tp8.md

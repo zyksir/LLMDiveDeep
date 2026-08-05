@@ -80,6 +80,17 @@ ABLATIONS = {
              "overlap_shared": False, "ref_tail": False},
 }
 
+# B10_OPT_FLAGS="routing=noaux,ref_tail=False": arbitrary flag combos
+# for the opt config (crossover hunting needs 2+ flags flipped at
+# once, which --ablate can't express). Non-ablate runs only.
+_OPT_OVERRIDE = os.environ.get("B10_OPT_FLAGS", "")
+if _OPT_OVERRIDE:
+    _o = dict(ABLATIONS["opt"])
+    for _kv in _OPT_OVERRIDE.split(","):
+        _k, _v = (s.strip() for s in _kv.split("="))
+        _o[_k] = {"True": True, "False": False}.get(_v, _v)
+    ABLATIONS["opt"] = _o
+
 
 def bootstrap() -> None:
     """Container's installed tensorrt_llm stays authoritative; register

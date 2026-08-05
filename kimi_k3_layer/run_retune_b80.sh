@@ -63,8 +63,8 @@ ONESHOT="BENCH_ALLREDUCE_STRATEGY=ONESHOT"
 run "1 AG duel: qpush vs recv-side (bit-exactness + timing)" "" \
     "$MPI python3 kimi_k3_layer/tmp_fc1_ag_duel.py"
 
-run "2 GEMM-vs-batch sweep" "" \
-    "CUDA_VISIBLE_DEVICES=0 python3 debug/gemm_bs_sweep.py"
+run "2 GEMM-vs-batch sweep" "CUDA_VISIBLE_DEVICES=0" \
+    "python3 debug/gemm_bs_sweep.py"
 
 run "3 MAIN ablation B=1..80 (ONESHOT baseline)" "$ONESHOT" \
     "$MPI python3 kimi_k3_layer/bench_moe_kimi_k3.py --sizes $SIZES --ablate"

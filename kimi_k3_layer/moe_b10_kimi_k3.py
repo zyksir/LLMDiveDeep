@@ -78,10 +78,15 @@ from .routing_kimi_k3 import (
 # pipeline the shard's AG rebuilds the latent contiguous, and with the
 # MXFP8 quantize FUSED on the AG's write-out (all_gather_mxfp8) the
 # whole exposed contiguous-copy + quantize stage between routing and
-# permute disappears (B=8: 111.6 -> 104.2 us). Forced-always sweep
-# with the fused AG: wins ~4 us at B=16, wash at 32, -3 at 64 - gate
-# at 16. Re-measure with --ablate after comm/kernel changes.
-FC1_SHARD_MAX_TOKENS = int(os.environ.get("B10_FC1_SHARD_MAX_TOKENS", "16"))
+# permute disappears (B=8: 111.6 -> 104.2 us). Aug-5 forced-extremes
+# retune on this node (run_retune_b80.sh step 4 + run_combo_b80.sh
+# E1): ALWAYS-on beats the old <=16 gate at every size with NO
+# regression - 83.3 vs 89.4 @16, 90.6 vs 99.0 @32, 118 vs 132 @64,
+# 148 vs 154 @80 - so the gate default is now effectively "always"
+# (also what the deploy classes require: their merge3 weight layout
+# has no full-fc1 fallback). Env kept for re-tuning on other nodes.
+FC1_SHARD_MAX_TOKENS = int(
+    os.environ.get("B10_FC1_SHARD_MAX_TOKENS", "1000000000"))
 
 # fc2 column shard + RS crossover (overnight sweep, two runs): the
 # sharded tail wins +13..21 us at B<=32 and +5 at B=64, but at B=128
@@ -92,9 +97,14 @@ FC2_SHARD_MAX_TOKENS = int(os.environ.get("B10_FC2_SHARD_MAX_TOKENS", "64"))
 
 # shared-expert overlap crossover (see _forward_opt comment);
 # env-overridable so the crossover can be re-measured after routing /
-# kernel changes without editing code
+# kernel changes without editing code. Aug-5 retune: with fc1 shard
+# always-on and the B>64 noaux routing fallback, overlap at B=80 is
+# worth 19 us (140.9 -> 121.6, +2% -> +15% vs baseline) - the old <=64
+# gate came from a hot-routing configuration that no longer exists.
+# 96 covers the target range (80); the "two weight-read-bound stages
+# serialize in DRAM" loss at 128 is unverified in the new config.
 OVERLAP_SHARED_MAX_TOKENS = int(
-    os.environ.get("B10_OVERLAP_MAX_TOKENS", "64"))
+    os.environ.get("B10_OVERLAP_MAX_TOKENS", "96"))
 
 # latent RS+norm strategy: ALWAYS the fused in-kernel norm. At the
 # decode sizes we care about (B<=16) fused wins outright - its
@@ -115,6 +125,17 @@ RS_DEFER_MIN_TOKENS = int(
 # under multi-input averaging (c8 ablation) -> default 16.
 REF_TAIL_MIN_TOKENS = int(os.environ.get("B10_REF_TAIL_MIN_TOKENS", "16"))
 
+# ... with a measured EXCEPTION (Aug-5 retune, twice-confirmed): at
+# exactly B=64 the fc2-shard tail beats the ref tail by ~2.7 us
+# (115.3/115.5 vs 118.0) while at 80 the ref tail wins by ~7 (121.8
+# vs 129.0 shard / 142.8 fat-AR). B=64 sits at the worst point of the
+# ref tail's AR(latent)+full-fc2 cost curve while the shard tail's
+# RS+AR pair still amortizes; by 80 the full-fc2 CuTeDSL GEMM +
+# no-output-collective structure pulls ahead again. Env: comma list.
+REF_TAIL_SKIP_TOKENS = frozenset(
+    int(s) for s in
+    os.environ.get("B10_REF_TAIL_SKIP", "64").split(",") if s)
+
 # trtllm-gen input-stage crossover: below this, ONE merged [gate|fc1]
 # GEMM (single weight pass, shared chain forks immediately) wins; from
 # here up, split gate->routing->fc1 wins (routing in a clean window,
@@ -122,6 +143,21 @@ REF_TAIL_MIN_TOKENS = int(os.environ.get("B10_REF_TAIL_MIN_TOKENS", "16"))
 # expert window). Measured B=8: 164 vs 171; B=128: 386 vs 372.
 ROUTED_SPLIT_MIN_TOKENS = int(
     os.environ.get("B10_ROUTED_SPLIT_MIN_TOKENS", "64"))
+
+# routing "ours" crossover (Aug-5 combo runs, fc1 shard always-on):
+# the one-CTA-per-token Triton top-16 wins through B=64 (+16 us @32,
+# +3 @64 vs the stock noaux path) but its serial 16-max chain loses
+# ~8 us at B=80 - fall back to in-kernel routing above the gate.
+ROUTING_OURS_MAX_TOKENS = int(
+    os.environ.get("B10_ROUTING_OURS_MAX_TOKENS", "64"))
+
+# merge3 batch gate: the wide [B,7168]x[7168,2880] input GEMM wins
+# while the read is weight-bound, but at B=80 the -merge3 ablation
+# column beat it by ~2.7 us (119.2 vs 121.9) - the wide-N GEMM has
+# started scaling with B while the narrow two-way merge + aux-stream
+# shared GEMM overlap better. (At B=64 routing is still "ours" so the
+# routed pipeline already disables merge3; this gate only bites 65+.)
+MERGE3_MAX_TOKENS = int(os.environ.get("B10_MERGE3_MAX_TOKENS", "64"))
 
 # prefill path floor: measured +3% at 192, +6% at 256, +12% at 512,
 # +22% at 2048-4096 tokens (bench_moe_kimi_k3, TP8). Below ~192 the
@@ -618,16 +654,27 @@ class KimiK3MoEB10(KimiK3MoE):
     ) -> torch.Tensor:
         batch = hidden_states.view(-1, self.hidden_dim).shape[0]
         if getattr(self, "_opt_ready", False):
-            if batch <= min(self.OPT_MAX_TOKENS, self._max_batch):
-                return self._forward_opt(hidden_states)
-            if (
-                self._flag_prefill
-                and self._world > 1
-                and self._ag_ce is not None
-                and batch >= PREFILL_MIN_TOKENS
-                and batch * MOE_LATENT * 2 <= self._ag_ce.slot_bytes
-            ):
-                return self._forward_prefill(hidden_states)
+            # routing "ours" is a per-token Triton CTA with a serial
+            # top-16 chain: wins through B=64 (+3 us vs noaux at 64)
+            # but LOSES ~8 us at B=80 - gate it by batch. Host-side
+            # attribute swap, decided at graph-capture time.
+            flag_routing = self._flag_routing
+            if (flag_routing == "ours"
+                    and batch > ROUTING_OURS_MAX_TOKENS):
+                self._flag_routing = "noaux"
+            try:
+                if batch <= min(self.OPT_MAX_TOKENS, self._max_batch):
+                    return self._forward_opt(hidden_states)
+                if (
+                    self._flag_prefill
+                    and self._world > 1
+                    and self._ag_ce is not None
+                    and batch >= PREFILL_MIN_TOKENS
+                    and batch * MOE_LATENT * 2 <= self._ag_ce.slot_bytes
+                ):
+                    return self._forward_prefill(hidden_states)
+            finally:
+                self._flag_routing = flag_routing
         return super().forward(hidden_states, attn_metadata, **kwargs)
 
     def _forward_prefill(self, hidden_states: torch.Tensor) -> torch.Tensor:
@@ -760,6 +807,7 @@ class KimiK3MoEB10(KimiK3MoE):
             and self._fi_ar is not None
             and self._fi_ar_sh is not None
             and batch >= REF_TAIL_MIN_TOKENS
+            and batch not in REF_TAIL_SKIP_TOKENS
         )
         # expert-finalize fusion: run the experts UNFINALIZED and fold
         # the gather+scale into the tail collective - the flashinfer
@@ -794,6 +842,7 @@ class KimiK3MoEB10(KimiK3MoE):
         # of gf (SiTUAndMul makes it contiguous itself).
         merge3 = (self._flag_merge3 and overlap and self._trtllm_gen
                   and self._flag_merged and not routed_pipeline
+                  and batch <= MERGE3_MAX_TOKENS
                   and world > 1)
 
         def _fork_shared(gu=None):

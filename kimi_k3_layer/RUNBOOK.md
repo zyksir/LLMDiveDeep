@@ -31,6 +31,12 @@ First run JIT-builds `k3_comm_cuda` (~5 min) and flashinfer
 > AG duel (`tmp_fc1_ag_duel.py`: qpush-vs-receiver-side per B, with
 > bit-exactness asserted), fc1-shard ALWAYS/NEVER, ref-tail extremes,
 > traces, and the final figure regen. Log: `/tmp/retune_b80.log`.
+>
+> **RESOLVED on the model-performance box (Aug 5)** — decisions are
+> code defaults now; see `moe_optimization.md` §11: fc1 shard ALWAYS,
+> routing "ours" ≤64, overlap ≤96, ref tail 16+ except 64, merge3
+> ≤64, qpush rejected. Logs: `results/experiments/retune_aug5/`.
+> Re-run this section only after hardware or kernel changes.
 
 Targets: **1, 2, 4, 8, 16, 32, 64, 80 — 32 is the most important.**
 The shipped defaults were tuned for 1–16; every threshold pivots
