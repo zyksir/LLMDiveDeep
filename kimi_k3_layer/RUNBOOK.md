@@ -68,6 +68,16 @@ CUDA_VISIBLE_DEVICES=0 python3 debug/gemm_bs_sweep.py
 Measures where each layer GEMM ([bs,7168]x[7168,3584] etc.) stops
 being weight-read-flat and starts scaling with bs.
 
+**NEW since the sweep: `quant_slice_mxfp8`** (kimi_k3_layer/
+quant_slice.py, wired behind `B10_QUANT_SLICE`, default on): ONE
+Triton pass turns the merged GEMM's strided latent slice into
+(e4m3, ue8m0) BIT-EXACTLY vs `mxfp8_quantize` - 1.1-1.4 us vs
+1.9-4.6 for copy+quantize at bs=1..80, NO collective. This decouples
+the quantize fusion from the fc1 shard: in the SS1 ablation,
+`-fc1shard` now keeps the fusion, so read that column as the pure
+comm-vs-compute shard verdict. Expect fc1 shard OFF at 32-80 (and
+possibly everywhere) with no fusion loss.
+
 **The decision rule all shard crossovers follow** (sharding = trade
 communication for computation): shard wins iff
 `saved_compute(bs) > comm_cost(bs)`.

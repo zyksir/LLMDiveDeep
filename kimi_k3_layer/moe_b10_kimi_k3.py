@@ -64,6 +64,7 @@ from .config import (
     TOP_K,
 )
 from .moe_trtllm_kimi_k3 import KimiK3MoE
+from .quant_slice import quant_slice_mxfp8
 from .routing_kimi_k3 import (
     route_for_fused_moe,
     route_for_trtllm_gen,
@@ -885,11 +886,23 @@ class KimiK3MoEB10(KimiK3MoE):
                 with torch.profiler.record_function("moe.split_gf"):
                     latent = self._split_gf_opt(gf, False)
             elif self._trtllm_gen:
-                # the trtllm-gen wrapper's pre-quant F.pad clones its
-                # input unconditionally (even at pad 0), which also
-                # makes it contiguous - a .contiguous() here would
-                # copy the same [B, latent] twice
-                latent = gf[:, NUM_EXPERTS:NUM_EXPERTS + lat_w]
+                if (self._gen_mxfp8 and self._flag_routing == "ours"
+                        and os.environ.get("B10_QUANT_SLICE",
+                                           "1") != "0"):
+                    # fused strided-slice -> MXFP8 (ONE Triton pass,
+                    # bit-exact vs mxfp8_quantize): kills the
+                    # contiguous copy AND the quantize kernel with NO
+                    # collective - the same fusion the fc1-shard AG
+                    # carried, now available shard-free (bs 32..80)
+                    with torch.profiler.record_function(
+                            "moe.quant_slice"):
+                        latent = quant_slice_mxfp8(
+                            gf[:, NUM_EXPERTS:NUM_EXPERTS + lat_w])
+                else:
+                    # the trtllm-gen wrapper's pre-quant F.pad clones
+                    # its input unconditionally (even at pad 0), which
+                    # also makes it contiguous
+                    latent = gf[:, NUM_EXPERTS:NUM_EXPERTS + lat_w]
             else:
                 with torch.profiler.record_function("moe.latent_copy"):
                     latent = gf[:, NUM_EXPERTS:].contiguous()

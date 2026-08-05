@@ -131,3 +131,21 @@ next improvement cycle (respec must keep the INT21 schedule AND fuse the prologu
 ### gen_gemv6 FINAL: kernel runs 46.4us @ B=16 (1374 GB/s = 17% peak) vs incumbent ~34us -> SLOWER
 (per-(token,pick) formulation re-reads expert weights; needs per-active-expert grouping to hit
 the 8-10us roofline) + 45/14336 elements out of the strict gate. NOT integrated. Improvement-cycle item.
+
+### recurrent_kda (PR #4262) comparison: STILL PENDING. Contract fixed in debug/kda_rkda_compare.py
+(cu_seqlens required, bf16 [N,HV,V,K] state, PRE-SIGMOIDED beta) + NaN guard added. GPU7 attempt
+invalid: b10 4x its known numbers (contended GPU) and fi kernel returned NaN in 10-21us (silent
+dispatch failure). Rerun on clean node - RUNBOOK section 4.
+
+### KDA prefill kernel duel (GPU6, b10-canary clean): b10 190/376/739 vs INT21 266/517/1016 (H=12, +29%)
+and 843 vs 1443 at H=96/8k (+41%). INT21 built from Int21-AI/KDA-B200 (registry path patched, row PASSes
+exact-correctness). flashinfer 0.6.15 does NOT contain PR #4262 (merged Aug 3 > wheel); its recurrent_kda
+is the pre-PR generic path (slow + wrong for prefill). Duel vs the real CAKE kernels needs flashinfer@main
+in an isolated venv - runbook updated.
+
+### g2 GEMM sweep @ bs=1..80 (GPU6 clean): ALL dense GEMMs FLAT through 80 (compute transition >>80).
+fc1_full 9.4->10.2 | fc2_full 5.5-8.0 | merge3 7.1-8.3 (beats split gate+fc1 11.4-15.1 at 64/80!)
+fc1_shard floor 4.9us @1.3TB/s -> GEMM-side shard saving only 2.2-4.5us at ALL sizes (fusion-only value).
+shared_gu cuBLAS CLIFF at bs=32: 11.9us (2.1x neighbors) - merge3 dodges it.
+=> 32-80 retune priors: drop fc1 shard (unless AG-quant pays), tail decided by collectives only
+(full-fc2 read stays cheap), extend merge3 past 64, never run shared_gu separately at 32.
