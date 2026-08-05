@@ -1,31 +1,37 @@
-# Sparse & Linear Attention Benchmarks
+# Sparse & Linear Attention Benchmarks — how to reproduce
 
 Reproducible microbenchmarks for the non-dense attention paths that show up
-in modern open-source **language models** — DeepSeek-V3.2 / V4 / GLM-5 /
-GLM-5.2 sparse attention, **plus** Qwen3-Next-style linear attention. (Video
-sparse attention — VSA / WanVideo — is deferred; see §1.)
+in modern open-source LLMs — DeepSeek-V3.2 / V4 / GLM-5 / GLM-5.2 sparse
+attention, plus Qwen3-Next / Kimi-Linear linear attention. All numbers come
+from **synthetic tensors** through the same Triton / CuTe / DeepGEMM kernels
+the production models run; no model weights are loaded, no server setup is
+required.
 
-`DSA.py` (the shared implementation), two benchmark drivers, and one written
-explainer. Everything is self-contained: no model weights, no server setup,
-no paged KV cache — all numbers come from synthetic tensors through the same
-Triton / CuTe kernels that the production models use.
+**Results are in `SURVEY.md`.** This file only covers *how* to run.
 
-Three questions this benchmark is designed to answer:
+Three questions the benches are designed to answer, each covered by a
+different driver:
 
-1. **What is increasing** as sequence length, sparsity, or IndexShare period grows?
-2. **What is the cosine similarity** between sparse-attention output and dense-attention output?
-3. **What is the quality / performance trade-off** — how much accuracy do we spend per unit of speedup?
+1. **Where does DSA time go?** (indexer vs sparse-FA vs dense-FA at long
+   context) → `bench_indexer_cost.py`, results in `SURVEY.md §3`.
+2. **How do sparse and linear attention compare with dense at matched shape?**
+   (dense FA baseline, block-sparse FA at fixed sparsity, indexer alone,
+   combined DSA, linear-attention GDN) → `bench_sparse_attention_kernels.py`
+   (six parts A–F).
+3. **What does the *whole* nn.Module cost?** — the module-level bench
+   (DSv3.2 / GLM-5 / DSv4-C4 with projections, LayerNorm, RoPE, FP8 quant
+   included) → `bench_sparse_attention_modules.py`.
 
-All numbers below are on a single **NVIDIA B200** in the
-`lmsysorg/sglang:dev-cu13` container.
+All numbers on a single **NVIDIA B200**, `lmsysorg/sglang:dev-cu13` /
+`torch 2.11.0+cu130` / `triton 3.6.0`.
 
 ---
 
 ## 1. The wider landscape (what else sglang ships)
 
 The scripts here focus on DSA-style sparse attention because that is the
-family with the most active development in 2025. But sglang actually ships
-several other non-dense attention paths. If you're wondering "does the
+family with the most active development in 2025–2026. But sglang actually
+ships several other non-dense attention paths. If you're wondering "does the
 picture change with a different attention family?", the answer is on this
 list.
 
@@ -38,9 +44,14 @@ list.
 | **Lightning / SegLa** | Bailing-MoE-Linear, Bailing-MoE-v2.5 | `linear/seg_la.py::seg_la_fwd` |
 | **Mamba-2 SSM** | Falcon-H1, Nemotron-H, Granite-MoE-Hybrid, LFM2, Zaya | `mamba/ops/ssd_combined.py` |
 
-**Only GDN is benchmarked in PART F below**, as the canonical linear-attention
-example. The other three have the same $O(S)$ scaling and the same shape of
-"linear state instead of softmax score matrix"; expect similar curves.
+**GDN is benchmarked in PART F** of `bench_sparse_attention_kernels.py` as the
+canonical linear-attention example; **KDA (Kimi-Linear)** is covered alongside
+it: `LinearAttention.py` ships a portable pure-torch gated-delta-rule
+reference for *both* GDN and KDA (runs with no sglang), plus thin wrappers
+around the FLA `chunk_gated_delta_rule` / `chunk_kda` kernels for the fast
+path. The remaining two (SegLa, Mamba-2) share the same $O(S)$ scaling and
+the "linear state instead of softmax score matrix" shape; expect similar
+curves.
 
 ### Sparse (subset of KV, still softmax)
 
@@ -53,75 +64,93 @@ example. The other three have the same $O(S)$ scaling and the same shape of
 | **Sliding window + attention sinks** | gpt-oss, Mistral, Ministral, Gemma-2/3, Olmo-2, Phi-MoE, Cohere-2 | Window enforced inside FA / Triton metadata |
 | **Video block-sparse (VSA)** | WanVideo DiT, Causal-WanVideo, Lingbot-World | `multimodal_gen/.../sparse_attn/video_sparse_kernel.py` |
 
-**DSA / DSA-C4 are benchmarked in PARTs C, D, E**. PARTs B, D, and E use a
-generic block-sparse Triton kernel for their "sparse-FA" column, standing in
-for the "sparse-MLA" step inside DSA. That same kernel is what WanVideo's DiT
-uses natively for **video** block-sparse attention (VSA) — so the LM
-sparse-attention numbers here map directly onto that model class. The
-video-specific VSA story is **deferred**: this suite focuses on language-model
-attention first, and VSA can be investigated later. **Quest, dual-chunk, and
-sliding-window are not benchmarked** because none of them has a clean
-stand-alone kernel — Quest needs a live paged KV pool, dual-chunk needs heavy
-metadata pre-computation, sliding-window is just a mask on top of regular FA.
+DSA / DSA-C4 are benchmarked in **PARTs C, D, E** of the kernel bench and in
+the new headline bench `bench_indexer_cost.py`. PARTs B, D, and E use a
+generic block-sparse Triton kernel for their "sparse-FA" column — the same
+kernel WanVideo uses for video block-sparse attention.
 
 ### Eviction / cache tiering
 
-- **HiSparse** — host↔device KV tiering, coordinates with DSA / DSv4 / MLA
-  backends. Not a stand-alone attention kernel; not benchmarked here.
+**HiSparse** — host↔device KV tiering that coordinates with DSA / DSv4 / MLA
+backends. Not a stand-alone attention kernel; not benchmarked here.
 
 ### What's *not* in sglang
 
 Notably absent (as of the version in this container): SnapKV, H2O, RocketKV,
-MoBA, InfLLM, MInference (as a named integration), RWKV, RetNet.
+MoBA, InfLLM, MInference (as a named integration), RWKV, RetNet, MiniMax-M3.
 
 ---
 
 ## 2. Environment
 
 You need a Hopper (SM_90) or Blackwell (SM_100) GPU and CUDA 12.6+/13. All
-numbers below were validated on a single **NVIDIA B200**, CUDA 13, Python
-3.12, `torch` 2.11.0+cu130, `triton` 3.6.0.
+numbers in `SURVEY.md` were validated on a single **NVIDIA B200**, CUDA 13,
+Python 3.12, `torch` 2.11.0+cu130, `triton` 3.6.0.
 
 ### Installing the dependencies
 
-Everything the benchmarks import is either pip-installable or builds from the
-open-source **sglang** source tree. The recommended flow is a dedicated
-virtualenv at the repo root (`LLMDiveDeep/.venv`), shared by the `sparse_attn`
-and `quantization` suites:
+**sglang is a hard dependency, not optional.** The DSA indexer kernel
+(`deep_gemm.fp8_mqa_logits`), the FA4 dense baseline, and the linear-attention
+kernels (`fla.chunk` / `fla.kda`) all ship as part of sglang and its
+dependency set — installing sglang pulls them in, no separate build step.
+The recommended flow is a dedicated virtualenv at the repo root
+(`LLMDiveDeep/.venv`), shared by the `sparse_attn` and `quantization` suites.
+We use [`uv`](https://docs.astral.sh/uv/) — a faster drop-in replacement for
+`venv` + `pip` (`pip install uv` if you don't have it):
 
 ```bash
 cd /path/to/LLMDiveDeep
-python -m venv .venv
+uv venv .venv
 source .venv/bin/activate
 
-# 1. Core (pick the torch wheel matching your CUDA toolkit).
-pip install -r sparse_attn/requirements.txt          # torch, triton, numpy
+# Everything in one shot: torch/triton/numpy + sglang[diffusion]==0.5.15.post1
+# (which brings the DSA indexer kernel, the FA4 dense baseline, and the
+# GDN/KDA linear-attention kernels). PyPI ships a prebuilt cp310-cp313
+# manylinux wheel for that pin, so this needs NO source build and NO Rust
+# toolchain.
+uv pip install -r sparse_attn/requirements.txt
 
-# 2. sglang from source, pinned to a known-good release tag.
-#    v0.5.15.post1 has DSA (V3.2), GLM-5.2 IndexShare, GDN, and DSv4
-#    sparse support. Pin the tag so the module paths this suite imports
-#    (dsa_indexer / fla.chunk / flash_attention_v4) don't drift.
-git clone https://github.com/sgl-project/sglang.git
-git -C sglang checkout v0.5.15.post1
-pip install -e "sglang/python[all]"
-
-# 3. deep_gemm (fp8_mqa_logits) and flash-attn FA4 (CuTe DSL) — follow the
-#    build steps in the sglang docs for your GPU/CUDA. Both are optional:
-#    the indexer falls back to a torch FP32 path and the dense baseline
-#    falls back to sglang's FA4 if either is missing.
+# One extra for the new bench_indexer_cost.py plot output.
+uv pip install matplotlib
 ```
 
-> **Note on the block-sparse kernel.** The Triton block-sparse FA used as the
-> LM sparse-attention step (PARTs B/D/E) currently lives in an internal
-> `b10_kernels/sparse_attn/video_sparse_kernel.py` path that is **not yet in
-> upstream sglang**. Point the benchmarks at whatever directory contains a
-> `sparse_attn/` package via:
+> **Building sglang from source instead (only if you want to modify it).**
+> The prebuilt wheel above is enough to run every bench. If you need an
+> editable checkout, the source build uses `setuptools-rust`, so install a
+> Rust toolchain first (`cargo` must be on PATH), then `-e` install:
 >
 > ```bash
-> export SGLANG_B10_KERNELS_DIR=/path/to/.../b10_kernels
+> curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+>     | sh -s -- -y --default-toolchain stable --profile minimal
+> source "$HOME/.cargo/env"
+> git clone https://github.com/sgl-project/sglang.git
+> git -C sglang checkout v0.5.15.post1
+> uv pip install -e "sglang/python[diffusion]"
+> ```
+
+> **FA4-cute JIT caveat.** The FA4 CuTe-DSL kernel JIT-compiles through
+> `nvidia-cutlass-dsl`. **Outside** the `lmsysorg/sglang:dev-cu13` container
+> that compile can fail with `GPUModuleOp.__init__(): incompatible function
+> arguments` — a cutlass-dsl / MLIR-binding version skew. When it does,
+> `bench_indexer_cost.py` (which uses `torch.nn.functional.
+> scaled_dot_product_attention` and hits the same FA family) still runs;
+> `bench_sparse_attention_kernels.py`'s PARTs C and F are unaffected, but
+> the dense `speedup` columns in PARTs A/D show `nan`. Run inside the dev
+> container to get the dense baseline for the kernel bench.
+
+> **Block-sparse kernel path.** The Triton block-sparse FA used as the
+> LM sparse-attention step (PARTs B/D/E of the kernel bench) is **not part
+> of upstream sglang** — it lives in an external package. Point the
+> benchmarks at whatever directory contains that `sparse_attn/` package via:
+>
+> ```bash
+> export SPARSE_ATTN_KERNELS_DIR=/path/to/kernels
 > ```
 >
-> Without it, PARTs A, C, and F still run; the block-sparse parts skip.
+> Without it, PARTs C and F still run (and PART A when the FA4 baseline
+> compiles); the block-sparse parts skip. `bench_indexer_cost.py` does *not*
+> need this — its sparse-FA measurement uses standard SDPA over the top-K
+> selected KV slice.
 
 ### Turnkey image (fastest path)
 
@@ -145,17 +174,73 @@ cd /workspace/LLMDiveDeep/sparse_attn
 
 ## 3. Running the benchmarks
 
-Run from `LLMDiveDeep/sparse_attn` (with the `.venv` active, or inside the
-container).
+All commands run from `LLMDiveDeep/sparse_attn` (with the `.venv` active, or
+inside the container).
 
-### Quick smoke test (~20 s)
+### 3.1 `bench_indexer_cost.py` — the two-question headline bench (recommended first)
+
+Self-contained. Requires `torch`, `deep_gemm`, `matplotlib`, and `sglang`
+(for the fused Hadamard / `act_quant` kernels). Produces one table + one
+two-panel PNG plot answering the two questions in `SURVEY.md §3`: (Q1) full
+indexer vs sparse-FA cost, (Q2) sparse-FA vs dense-FA cost. The indexer is
+measured **at two levels**:
+
+- `mqa_logits` — the `deep_gemm.fp8_mqa_logits` score kernel alone (step 7 of
+  the indexer pipeline).
+- `full_indexer` — the whole per-decode-step pipeline (steps 1–8): `wq_b` +
+  `wk` + `k_norm` + `weights_proj` + RoPE + Hadamard + FP8-quant +
+  `fp8_mqa_logits` + `topk`.
+
+`setup_overhead = full_indexer − mqa_logits − topk` isolates the "everything
+except the score kernel" plumbing, which turns out to dominate below ~64 K
+context.
+
+```bash
+# ~1 min: sweeps B ∈ {1, 16}, S ∈ {32K, 128K, 1M} with the DSv3.2 shape.
+python bench_indexer_cost.py
+
+# Custom sweep — measure only decode with a single batch:
+python bench_indexer_cost.py --B 1 --S 8192 32768 131072 --warmup 5 --iters 25
+
+# The full sweep with high iters for tight variance:
+python bench_indexer_cost.py --B 1 16 --warmup 10 --iters 50
+```
+
+Outputs written to the current directory:
+
+| File | What |
+|---|---|
+| `bench_indexer_cost.csv` | Raw timings (all five callables per `(B, S)` row). |
+| `bench_indexer_cost.png` | Two log-log panels: indexer vs sparse; dense vs sparse. |
+
+Available flags:
+
+| Flag | Meaning | Default |
+|---|---|---|
+| `--B 1 16` | batch sizes to sweep (query count = B; each has its own S KV history) | `1 16` |
+| `--S 32768 131072 1048576` | KV sequence lengths to sweep | `32K 128K 1M` |
+| `--warmup / --iters` | GPU-event timing budget | `5 / 25` |
+| `--csv / --plot` | output paths | `bench_indexer_cost.{csv,png}` |
+
+To retarget a different model, edit the `Shape` dataclass at the top of the
+script (`H_I`, `D_I`, `TOPK`, `H_A`, `D_A`, `H_KV`, `BLOCK_SIZE`).
+
+### 3.2 `bench_sparse_attention_kernels.py` — the six-part kernel bench
+
+Isolates the three primitives that make DSA / IndexShare run in isolation:
+dense FA, block-sparse FA, and the lightning indexer. Also produces a
+combined "indexer + sparse-FA vs dense-FA" table (PART D) and a **quality
+table** measuring cos-sim of sparse-attention output vs dense at matched
+sparsity (PART E). PART F adds a linear-attention (GDN) column.
+
+Quick smoke test (~20 s):
 
 ```bash
 CUDA_VISIBLE_DEVICES=0 python bench_sparse_attention_kernels.py --all \
     --seq_lens 4096 8192 16384 --warmup 2 --iters 5 --index_topk_freq 4
 ```
 
-### Full sweep (~2 min)
+Full sweep (~2 min):
 
 ```bash
 CUDA_VISIBLE_DEVICES=0 python bench_sparse_attention_kernels.py --all \
@@ -164,9 +249,7 @@ CUDA_VISIBLE_DEVICES=0 python bench_sparse_attention_kernels.py --all \
 
 Uses the default `--seq_lens 512 1024 … 65536`.
 
-### Individual parts
-
-The kernel bench has six parts and each is independently runnable:
+Individual parts (each independently runnable):
 
 ```bash
 python bench_sparse_attention_kernels.py --dense       # PART A: dense FA baseline (FA4)
@@ -188,15 +271,19 @@ Useful flags:
 | `--warmup / --iters` | GPU-event timing budget | `10 / 50` |
 | `--causal` | causal masking in PART A | non-causal |
 
-### Module-level bench
+### 3.3 `bench_sparse_attention_modules.py` — module-level bench
+
+Wraps the same hot path in a real `nn.Module` mirroring the production
+DSv3.2, GLM-5, and DSv4 indexers, so the timing includes projections,
+LayerNorm, RoPE, and FP8 quant — everything a deployed model actually pays
+for.
 
 ```bash
 python bench_sparse_attention_modules.py --all \
     --seq_lens 4096 8192 16384 32768 --index_topk_freq 4
 ```
 
-Compares three real `nn.Module` indexers (DSv3.2, GLM-5/5.2, DSv4-C4) at
-production shapes. Individual modules:
+Individual modules:
 
 ```bash
 python bench_sparse_attention_modules.py --dsv32 --index_topk_freq 1
@@ -210,191 +297,87 @@ python bench_sparse_attention_modules.py --dsv4                       # DSv4 com
 
 | File | What it is |
 |---|---|
-| `README.md` | This file. |
-| `requirements.txt` | Explicit dependency list — pip-installable pieces plus non-pip deps and where each is used. |
-| `DSA.py` | The DSA **implementation**, shared by both drivers: lightning-indexer hot path (`IndexerSimulator`), the real `nn.Module` indexers (`DsaIndexer` / `Dsv4Indexer`), FP8 quant, and FA4 / block-sparse backend registration. |
-| `bench_sparse_attention_kernels.py` | Kernel-level microbench driver (6 parts A–F). Synthetic tensors, no model load. Imports impl from `DSA.py`. |
-| `bench_sparse_attention_modules.py` | Module-level microbench driver. Times the real `nn.Module` indexers from `DSA.py` at production shapes. |
-| `SURVEY.md` | Model-by-model tour: what's different between Qwen 3, DeepSeek V3 → V4, GLM-5 → 5.2, MiniMax-M3, and Qwen3-Next. |
-| `ATTENTION_MATH.md` | Math-forward deep-dive: the sparse (DSA) and linear (GDN) formulas, cost breakdowns, and which bench PART measures each. |
-| `../common/bench_utils.py` | Shared `bench_function` / `print_section` helpers, reused by the `quantization` suite too. |
+| `README.md` | This file — how to run every bench in this directory. |
+| `SURVEY.md` | The narrative + benchmark results. Read this first for the "why". |
+| `ATTENTION_MATH.md` | Math-forward deep-dive: sparse (DSA) and linear (GDN) formulas, cost breakdowns. |
+| `requirements.txt` | Explicit dependency list. |
+| `DSA.py` | Shared MLA + DSA implementation: paper-form and weight-absorbed MLA (`MLAReference`), lightning indexers (`DsaIndexer` / `Dsv4Indexer` / `C4Compressor`), FP8 quant, optional kernel backends. |
+| `LinearAttention.py` | Companion to `DSA.py`: pure-torch gated-delta-rule reference for **GDN** (Qwen3-Next) and **KDA** (Kimi-Linear), plus the FLA-kernel wrappers. |
+| **`bench_indexer_cost.py`** | **New — the two-question headline bench.** Self-contained; only depends on torch + deep_gemm + matplotlib. Produces the plot in `SURVEY.md §3.4`. |
+| `bench_sparse_attention_kernels.py` | Six-part kernel-level bench driver. Imports impl from `DSA.py`. |
+| `bench_sparse_attention_modules.py` | Module-level bench driver. Times the real `nn.Module` indexers from `DSA.py` at production shapes. |
+| `bench_indexer_cost.csv` | Raw CSV data output by `bench_indexer_cost.py`. Regenerate by running the script. |
+| `bench_indexer_cost.png` | Two-panel log-log plot output by `bench_indexer_cost.py`. |
+| `../common/kernel_bench.py` | Shared kernel-bench framework (`bench_cuda` / `print_section` and more), reused by the `quantization` suite too. |
+
+The model logic is intentionally visible in `DSA.py`: `MLAReference.project`
+builds the compressed cache, `attend_absorbed` shows K/V weight absorption,
+`DsaIndexer.forward` computes the lightning-indexer top-K, and
+`DeepSeekSparseAttentionReference.forward` connects those pieces. Optimized
+SGLang / DeepGEMM kernels are used only as interchangeable low-level backends.
 
 ---
 
-## 5. Results on B200
+## 5. Troubleshooting
 
-All numbers below are from `lmsysorg/sglang:dev-cu13` on a single NVIDIA
-B200, non-causal, bf16 activations, FP8 for the indexer path.
-
-### 5.1 Dense baseline (PART A, GQA `H=32 H_kv=8 D=128`)
-
-| seq_len | FA4 ms | FA4 TFLOPS |
-|---:|---:|---:|
-|  8 K |  0.70 | 1566 |
-| 16 K |  2.74 | 1605 |
-| 32 K | 12.05 | 1460 |
-
-FA4 delivers 1.4–1.6 PFLOPS of useful work on B200. Every "speedup" column
-below divides into this row. (cuDNN SDPA is intentionally not reported: its
-BSHD↔BHSD transpose would be timed inside the attention call, making it an
-unfair baseline. `sgl_fa4` is the same FA4 kernel family, kept only as an
-import fallback.)
-
-### 5.2 Block-sparse FA alone (PART B, `H=24 D=128`, sparsity 5 %)
-
-| seq_len | sparse ms | dense ms | speedup |
-|---:|---:|---:|---:|
-|  8 K | 0.12 | 0.58 | **5.04×** |
-| 16 K | 0.36 | 2.13 | **5.95×** |
-| 32 K | 1.23 | 9.04 | **7.34×** |
-
-At 5 % sparsity the sparse-attention kernel by itself is 5–7× faster than
-dense. This is before paying the indexer. **Same kernel as WanVideo DiT
-uses for video-block-sparse attention.**
-
-### 5.3 Lightning indexer alone (PART C, DSv3.2 shape, `H_idx=64 D_idx=128`)
-
-| seq_len | proj ms | quant ms | logits+topk ms | total ms | effective GB/s |
-|---:|---:|---:|---:|---:|---:|
-|  8 K | 0.18 | 0.67 |  1.71 |  2.56 | 5168 |
-| 16 K | 0.34 | 1.29 |  5.49 |  7.12 | 6453 |
-| 32 K | 0.67 | 2.53 | 19.97 | 23.16 | 7097 |
-
-The indexer is HBM-bandwidth bound (~7 TB/s effective on B200's ~8 TB/s
-peak). `logits+topk` grows quadratically with $S$.
-
-### 5.4 Headline: DSA (indexer + sparse-FA) vs dense-FA (PART D)
-
-With `index_topk_freq=4` (GLM-5.2 IndexShare), sparsity 5 %:
-
-| seq_len | dense ms | indexer ms (/4) | sparse ms | total ms | speedup | idx frac |
-|---:|---:|---:|---:|---:|---:|---:|
-|  8 K |  0.58 |  0.64 | 0.11 |  0.75 | **0.77×** | 85 % |
-| 16 K |  2.13 |  1.88 | 0.38 |  2.25 | **0.94×** | 83 % |
-| 32 K |  8.98 |  5.90 | 1.63 |  7.53 | **1.19×** | 78 % |
-| 65 K | 37.32 | 21.71 | 5.69 | 27.40 | **1.36×** | 79 % |
-
-**Reading this table** (see full analysis in the previous chat turn):
-
-- DSA is **slower** than dense FA4 below 16 K — the $O(S^2)$ indexer term hasn't been amortized yet.
-- Break-even is at $S \approx 16\text{K}$ on our synthetic proxy shape (in real DSv3.2, whose dense-MLA baseline is ~10× fatter, break-even happens at shorter $S$).
-- Speedup grows monotonically past that, and extrapolating to 1 M lands right at GLM-5.2's advertised **~2.9×** number.
-- The indexer eats **~80 %** of total attention time at every $S$. That's exactly what DSv4's compressor and GLM-5.2's IndexShare both attack.
-
-### 5.5 Quality: cos-sim of sparse vs dense (PART E)
-
-Measured on synthetic inputs with a realistic 5 % heavy-hitter K/V bump.
-Two selection policies are compared at matched sparsity:
-
-- **random top-k** — pick blocks uniformly at random (adversarial floor; no indexer).
-- **oracle top-k** — score blocks with signed block-max of $Q \cdot K^T$ and pick top-k (ceiling; the best any indexer could do).
-
-| seq_len | sparsity | random cos | oracle cos | speedup |
-|---:|---:|---:|---:|---:|
-|  8 K | 0.02 | 0.11 | 0.47 | 7.3× |
-|  8 K | 0.05 | 0.18 | 0.61 | 5.1× |
-|  8 K | 0.10 | 0.28 | 0.75 | 3.1× |
-|  8 K | 0.25 | 0.48 | 0.88 | 1.5× |
-| 16 K | 0.02 | 0.10 | 0.53 | 11.2× |
-| 16 K | 0.05 | 0.19 | 0.69 | 6.0× |
-| 16 K | 0.10 | 0.29 | 0.79 | 3.4× |
-| 16 K | 0.25 | 0.48 | 0.91 | 1.5× |
-| 32 K | 0.02 | 0.11 | 0.60 | 15.7× |
-| 32 K | 0.05 | 0.20 | 0.73 | 7.4× |
-| 32 K | 0.10 | 0.29 | 0.81 | 4.0× |
-| 32 K | 0.25 | 0.49 | 0.92 | 1.7× |
-
-Real DSA-style indexers sit between the two columns, empirically much
-closer to the ceiling. Cos-sim also **improves with $S$** at fixed sparsity
-because the block-max selector has more material to find heavy hitters in.
-
-### 5.6 Linear attention (PART F, Qwen3-Next GDN)
-
-At `H=24 D=128`, same shape as PART B / D:
-
-| seq_len | linear (GDN) ms | dense (FA4) ms | speedup | note |
-|---:|---:|---:|---:|---|
-|  4 K | 0.31 |  0.15 | 0.49× | linear loses at short S |
-|  8 K | 0.57 |  0.58 | **1.01×** | breakeven |
-| 16 K | 1.10 |  2.14 | **1.94×** | |
-| 32 K | 2.53 |  8.98 | **3.55×** | |
-| 65 K | 4.43 | 36.83 | **8.31×** | |
-
-**The most instructive table in the whole benchmark**, because it shows the
-$O(S)$ vs $O(S^2)$ scaling in one place. Dense grows ~4× every time $S$
-doubles; GDN grows ~2×. At $S = 65\text{K}$ the gap is already 8×; at 1 M
-it would be > 100×.
-
-### 5.7 One-glance comparison across families
-
-Same shape (`H=24 D=128`, batch 1), same $S$, three approaches:
-
-| seq_len | dense (FA4) ms | **sparse (DSA + IndexShare)** ms | **linear (GDN)** ms | dense/sparse | dense/linear |
-|---:|---:|---:|---:|---:|---:|
-|  8 K |  0.58 |  0.75 | 0.57 | 0.77× | **1.02×** |
-| 16 K |  2.14 |  2.25 | 1.10 | 0.95× | **1.94×** |
-| 32 K |  8.98 |  7.53 | 2.53 | **1.19×** | **3.55×** |
-
-Three clean takeaways:
-
-- **At short context (< 16 K), dense wins on both fronts.** Sparse and linear only make sense past a certain sequence length.
-- **Linear scales better than sparse.** Both are answers to $O(S^2)$, but a per-token recurrence (linear) beats a per-token $O(S^2)$-with-small-prefactor scorer (sparse) at every $S$ we tested.
-- **They are not interchangeable in accuracy.** Linear attention drops the softmax entirely, which requires the model to be *trained* with linear attention from scratch (or a very careful fine-tune). Sparse attention keeps the softmax and only trims the key set, which can be dropped in more easily — that's why GLM-5 could adopt DSA verbatim from DeepSeek without retraining from scratch, and why Qwen3-Next is a much bigger architectural jump than Qwen3.5.
-
-### 5.8 Module-level indexer comparison (`bench_sparse_attention_modules.py`)
-
-At $S = 16\text{K}$, `index_topk_freq=4`:
-
-| Module | proj ms | quant ms | logits ms | total ms | idx/4 ms | idx frac |
-|---|---:|---:|---:|---:|---:|---:|
-| DSv3.2       | 0.36 | 1.29 | 6.39 | 8.04 | 2.01 | 27 % |
-| GLM-5 / 5.2  | 0.43 | 1.29 | 6.98 | 8.70 | 2.18 | 29 % |
-| **DSv4-C4**  | 0.40 | 1.33 | **2.65** | **4.38** | **1.09** | **17 %** |
-
-- **DSv4's compressor** cuts the `logits` step ~2.4× at 16 K (~4× at 64 K), exactly matching the `compress_ratio=4` design.
-- **GLM-5.2's IndexShare** divides the whole indexer cost by the period (`/4`) — nothing about the kernel changes, but the module runs only 1 in every 4 layers.
-- Combined, DSv4-C4 + IndexShare would give ~16× indexer-cost reduction.
+- **"deep_gemm MISSING" in the env report**: PART C and the module bench will
+  use a torch FP32 reference (~50× slower). Only expected on non-Blackwell /
+  non-Hopper GPUs.
+- **`bench_indexer_cost.py`: `SDPA … kernel not used` warnings.** SDPA
+  chooses a backend based on shape and dtype; the warnings say which backends
+  it *couldn't* pick — that's fine so long as at least one of
+  FLASH_ATTENTION / CUDNN_ATTENTION did work. The script forces
+  FLASH_ATTENTION where possible.
+- **`bench_sparse_attention_kernels.py`: "flash_attn.cute MISSING"**:
+  PART A / PART D / PART F dense baseline falls back to
+  `sglang.jit_kernel.flash_attention_v4` (`sgl_fa4`, same FA4 kernel family).
+  If that is also missing the dense column is skipped.
+- **"sparse FA backend unavailable"**: the block-sparse Triton kernel isn't
+  on the Python path. Set `SPARSE_ATTN_KERNELS_DIR` to the directory that
+  contains the `sparse_attn/video_sparse_kernel.py` package. Without it,
+  PARTs B/D/E of the kernel bench skip and the rest of the suite still runs.
+- **"chunk_gated_delta_rule not importable"**: PART F is skipped. This is
+  expected outside sglang containers; there's no FLA equivalent shipped
+  independently.
+- **OOM at 65 K+**: PART E and PART C's largest sequence lengths allocate
+  large scratch tensors even after streaming. Reduce `--seq_lens` or drop
+  PART E from the sweep. For `bench_indexer_cost.py` at $S = 1\text{M}$,
+  $B = 16$: the dense-FA tensors are ~8 GB; if you're tight on VRAM run
+  `--B 1` only.
 
 ---
 
-## 6. Reading the numbers
+## 6. Further reading
 
-### What is *increasing*?
+### In this directory
 
-- With $S$: indexer `logits` grows $O(S^2)$; sparse-FA grows linearly in $S$ at fixed sparsity; dense-FA grows $O(S^2)$; **linear-attention grows $O(S)$**; cos-sim increases with $S$ at fixed sparsity.
-- With sparsity: sparse-FA time grows linearly; both random-cos and oracle-cos grow monotonically.
-- With IndexShare period: indexer amortized cost drops proportionally; sparse-FA unchanged.
-- With compressor ratio: indexer logits time drops proportionally; proj/quant unchanged.
+- `SURVEY.md` — model-by-model comparison of GQA / MLA / DSA (DSv3.2 / GLM-5
+  / GLM-5.2 / DSv4 CSA + HCA), with the measured B200 numbers.
+- `ATTENTION_MATH.md` — the sparse + linear attention formulas behind those
+  numbers, with a to-read list.
+- `DSA.py` — sparse (DSA) implementation; `LinearAttention.py` — linear
+  (GDN + KDA) implementation.
 
-### What is the *cosine similarity*?
+### Papers & model cards
 
-Cos-sim of the sparse-attention output vector against the dense-attention
-output vector on the *same* $Q, K, V$. Range 0 → 1, higher is more faithful.
-See §5.5.
-
-### What is the *quality / performance trade-off*?
-
-- **sparsity ≤ 5 %** → 6–15× sparse-kernel speedup, but oracle cos-sim < 0.75. Only safe when the model was **trained** with sparse attention from scratch (NSA / DSA / MoBA).
-- **sparsity 10–15 %** → ~3–4× speedup, oracle cos-sim ~0.80. Sweet spot for training-free top-k (Quest, InfLLM).
-- **sparsity ≥ 25 %** → cos-sim > 0.90, but sparse-kernel speedup drops to 1.5× and indexer overhead usually erases it.
-- **Linear attention** doesn't sit on this same curve at all — it has to be trained end-to-end. The right question there is "how many linear-attention layers can I use before quality drops?" (Qwen3-Next uses 3 GDN layers per 1 full-attention layer).
-
----
-
-## 7. Troubleshooting
-
-- **"deep_gemm MISSING" in the env report**: PART C and the module bench will use a torch FP32 reference (~50× slower). Only expected on non-Blackwell / non-Hopper GPUs.
-- **"flash_attn.cute MISSING"**: PART A / PART D / PART F dense baseline falls back to `sglang.jit_kernel.flash_attention_v4` (`sgl_fa4`, same FA4 kernel family). If that is also missing the dense column is skipped.
-- **"sparse FA backend unavailable"**: the block-sparse Triton kernel from sglang isn't on the Python path. Set `SGLANG_B10_KERNELS_DIR` to the parent directory containing `sparse_attn/video_sparse_kernel.py` — inside `sgl_diff` it should be auto-discovered at `/sgl-workspace/sglang/python/sglang/multimodal_gen/runtime/layers/b10_kernels`.
-- **"chunk_gated_delta_rule not importable"**: PART F is skipped. This is expected outside sglang containers; there's no FLA equivalent shipped independently.
-- **OOM at 65 K+**: PART E and PART C's largest sequence lengths allocate large scratch tensors even after streaming. Reduce `--seq_lens` or drop PART E from the sweep. The other five parts scale to 65 K on 180 GB B200 without issue.
-
----
-
-## 8. Further reading
-
-- `SURVEY.md` — model-by-model comparison of Qwen 3 / DeepSeek / GLM-5 / MiniMax-M3 / Qwen3-Next.
-- `ATTENTION_MATH.md` — the sparse + linear attention formulas behind the numbers, with a to-read list.
-- DeepSeek V3.2 paper (DSA): https://arxiv.org/abs/2509.19000
-- GLM-5.2 blog (IndexShare, 2.9× at 1 M): https://z.ai/blog/glm-5.2
+- DeepSeek V3 paper (MLA): https://arxiv.org/abs/2412.19437
+- DeepSeek V3.2 report (DSA / lightning indexer): https://arxiv.org/abs/2509.19000
+- DeepSeek V4 paper (CSA + HCA): https://arxiv.org/abs/2606.19348
+- GLM-5 paper ("from Vibe Coding to Agentic Engineering"): https://arxiv.org/abs/2602.15763
+- GLM-5.2 blog (IndexShare, ~2.9× at 1 M): https://z.ai/blog/glm-5.2
+- IndexCache (empirical basis for IndexShare): https://github.com/THUDM/IndexCache
 - Qwen3-Next blog (Gated Delta Net): https://qwenlm.github.io/blog/qwen3-next/
+- Gated DeltaNet paper: https://arxiv.org/abs/2412.06464
+- Kimi Linear technical report (KDA): https://arxiv.org/abs/2510.26692
+- Kimi-Linear repo (open KDA kernel + vLLM): https://github.com/MoonshotAI/Kimi-Linear
+- Kimi-Linear-48B-A3B model card: https://huggingface.co/moonshotai/Kimi-Linear-48B-A3B-Instruct
+- Kimi K2 technical report (MLA flagship): https://arxiv.org/abs/2507.20534
+- Su Jianlin, *"From MHA, MQA, and GQA to MLA"* (MLA derivation): https://spaces.ac.cn/archives/10091
+
+### Blogs & explainers
+
+- DeepSeek Sparse Attention — Sebastian Raschka: https://sebastianraschka.com/llm-architecture-gallery/deepseek-sparse-attention/
+- A visual guide to attention variants — Sebastian Raschka: https://magazine.sebastianraschka.com/p/visual-attention-variants
+- DeepSeek Sparse Attention on GPU cloud (2026 guide) — Spheron: https://www.spheron.network/blog/deepseek-sparse-attention-long-context-llm-gpu-cloud/
+- Kimi Linear / KDA hardware-aware algorithms — DigitalOcean: https://www.digitalocean.com/community/tutorials/kimi-linear-moonshot-ai
+- Kimi K2.6 complete guide (2026) — Codersera: https://codersera.com/blog/kimi-k2-6-complete-guide-2026/

@@ -1,0 +1,13 @@
+impl,latency_us,batch,draft,heads,tokens_s,note
+b10_save_ssm_conv_gated,8.1632000207901,1,4,12,490003.9187834145,ONE kernel: conv4+SiLU + recurrence + T full-state snapshots + gated RMSNorm (b10 CuTeDSL)
+b10_save_ssm_gated + conv,9.293439984321594,1,4,12,430411.12943626475,"TWO launches: sglang conv, then the b10 kernel without the conv fused — prices the conv fusion"
+sglang_save_ssm_chain,15.655679702758789,1,4,12,255498.3287819266,THREE launches (production SGLang): causal_conv1d_update + verify T-loop with snapshots + FusedRMSNormGated
+b10_save_ssm_conv_gated,8.435840010643005,4,4,12,1896669.4460556076,ONE kernel: conv4+SiLU + recurrence + T full-state snapshots + gated RMSNorm (b10 CuTeDSL)
+b10_save_ssm_gated + conv,9.847679734230042,4,4,12,1624748.2078834064,"TWO launches: sglang conv, then the b10 kernel without the conv fused — prices the conv fusion"
+sglang_save_ssm_chain,16.917120218276978,4,4,12,945787.4504381581,THREE launches (production SGLang): causal_conv1d_update + verify T-loop with snapshots + FusedRMSNormGated
+b10_save_ssm_conv_gated,14.343039989471436,16,4,12,4462094.51043708,ONE kernel: conv4+SiLU + recurrence + T full-state snapshots + gated RMSNorm (b10 CuTeDSL)
+b10_save_ssm_gated + conv,15.843839645385742,16,4,12,4039424.876320239,"TWO launches: sglang conv, then the b10 kernel without the conv fused — prices the conv fusion"
+sglang_save_ssm_chain,22.529919147491455,16,4,12,2840667.096096789,THREE launches (production SGLang): causal_conv1d_update + verify T-loop with snapshots + FusedRMSNormGated
+b10_save_ssm_conv_gated,48.75840187072754,64,4,12,5250377.169430803,ONE kernel: conv4+SiLU + recurrence + T full-state snapshots + gated RMSNorm (b10 CuTeDSL)
+b10_save_ssm_gated + conv,53.19744110107422,64,4,12,4812261.543061901,"TWO launches: sglang conv, then the b10 kernel without the conv fused — prices the conv fusion"
+sglang_save_ssm_chain,76.21568202972412,64,4,12,3358888.7901070016,THREE launches (production SGLang): causal_conv1d_update + verify T-loop with snapshots + FusedRMSNormGated

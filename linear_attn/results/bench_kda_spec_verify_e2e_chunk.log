@@ -1,0 +1,118 @@
+===== H=12 (K=V=128) =====
+
+CORRECTNESS: e2e pipeline (conv + verify + gated norm) vs torch oracle — same o / committed SSM / snapshots, H=12 B=4 T=4 pnat=0 (rtol 0.015625; atol 0.02 for o, 0.004 for state buffers)
+  impl                              pass  o_max_abs  ssm_max_abs  snap_max_abs  note                                                          
+  torch_reference                   PASS          0            0             0  eager torch pipeline (the oracle itself)                      
+  b10_spec_snapshot_conv_gated      PASS     0.0075    1.975e-04     1.975e-04  fully fused (safe gate; conv and pre-norm r stay fp32 on-chip)
+  b10_spec_snapshot_gated (noconv)  PASS     0.0080    1.922e-04     2.180e-04  kernel on bf16 post-conv q/k/v                                
+  sglang_save_ssm_chain             PASS     0.0140       0.0027        0.0043  3-kernel chain (canonical gate, bf16 boundaries)              
+  b10_spec_verify_conv_gated        PASS     0.0075       0.0021             -  fully fused (safe gate); SSM = checkpoint folded with its ring
+  b10_spec_verify_gated (noconv)    PASS     0.0076       0.0013             -  kernel on bf16 post-conv q/k/v                                
+  trt_replay_chain                  PASS     0.0163       0.0029             -  3-kernel chain (safe gate, bf16 boundaries)                   
+  triton_chunk_replay_chain         PASS     0.0184       0.0040             -  TRT chain w/ chunk-form verify (WY GEMMs, no T-loop)          
+
+MATCH: b10 vs the scheme baseline, same gate flavor (rtol 0.03125 — cross-flavor: fp32 on-chip vs bf16 kernel boundaries; atol 0.02 for o, 0.004 otherwise)
+  b10 impl                      vs                                  buffer     pass  max_abs  cosine
+  b10_spec_snapshot_conv_gated  sglang_save_ssm_chain               o          PASS   0.0119  1.0000
+  b10_spec_snapshot_conv_gated  sglang_save_ssm_chain               snapshots  PASS   0.0036  1.0000
+  b10_spec_verify_conv_gated    trt_replay_chain                    old_u      PASS   0.0078  1.0000
+  b10_spec_verify_conv_gated    trt_replay_chain                    old_k      PASS   0.0039  1.0000
+  b10_spec_verify_conv_gated    trt_replay_chain                    old_G      PASS        0  1.0000
+  b10_spec_verify_conv_gated    checkpoint untouched (no overflow)  S          PASS        0  1.0000
+
+Benchmark 1: save_ssm e2e step (conv + verify + T full-state snapshots + gated norm) H=12 T=4 (us/iter)
+  impl                            batch  latency_us   tokens_s  note                                                                                                       
+  b10_spec_snapshot_conv_gated        1      8.1312  4.919e+05  ONE kernel: conv4+SiLU + recurrence + T full-state snapshots + gated RMSNorm (b10 CuTeDSL)                 
+  b10_spec_snapshot_gated + conv      1      9.3286  4.288e+05  TWO launches: sglang conv, then the b10 kernel without the conv fused — prices the conv fusion             
+  sglang_save_ssm_chain               1       15.47  2.586e+05  THREE launches (production SGLang): causal_conv1d_update + verify T-loop with snapshots + FusedRMSNormGated
+  b10_spec_snapshot_conv_gated        4      8.4493  1.894e+06  ONE kernel: conv4+SiLU + recurrence + T full-state snapshots + gated RMSNorm (b10 CuTeDSL)                 
+  b10_spec_snapshot_gated + conv      4      9.9264  1.612e+06  TWO launches: sglang conv, then the b10 kernel without the conv fused — prices the conv fusion             
+  sglang_save_ssm_chain               4       16.73  9.562e+05  THREE launches (production SGLang): causal_conv1d_update + verify T-loop with snapshots + FusedRMSNormGated
+  b10_spec_snapshot_conv_gated       16       14.38  4.452e+06  ONE kernel: conv4+SiLU + recurrence + T full-state snapshots + gated RMSNorm (b10 CuTeDSL)                 
+  b10_spec_snapshot_gated + conv     16       15.82  4.045e+06  TWO launches: sglang conv, then the b10 kernel without the conv fused — prices the conv fusion             
+  sglang_save_ssm_chain              16       22.48  2.848e+06  THREE launches (production SGLang): causal_conv1d_update + verify T-loop with snapshots + FusedRMSNormGated
+  b10_spec_snapshot_conv_gated       64       48.92  5.233e+06  ONE kernel: conv4+SiLU + recurrence + T full-state snapshots + gated RMSNorm (b10 CuTeDSL)                 
+  b10_spec_snapshot_gated + conv     64       53.44  4.790e+06  TWO launches: sglang conv, then the b10 kernel without the conv fused — prices the conv fusion             
+  sglang_save_ssm_chain              64       75.92  3.372e+06  THREE launches (production SGLang): causal_conv1d_update + verify T-loop with snapshots + FusedRMSNormGated
+wrote results/bench_kda_spec_verify_save_ssm_h12.csv
+wrote results/bench_kda_spec_verify_save_ssm_h12.png
+
+Benchmark 2: replay_ssm_fused e2e step (conv + cached-replay verify + ring append + gated norm) H=12 T=4 pnat=8 (us/iter)
+  impl                          batch  latency_us   tokens_s  note                                                                                                                                                        
+  b10_spec_verify_conv_gated        1      7.6858  5.204e+05  ONE kernel: conv4+SiLU + cached-replay verify + ring append + gated RMSNorm (b10 CuTeDSL)                                                                   
+  b10_spec_verify_gated + conv      1      8.9088  4.490e+05  TWO launches: sglang conv, then the b10 kernel without the conv fused — prices the conv fusion                                                              
+  trt_replay_chain                  1       10.00  3.998e+05  THREE launches (production TRT-LLM): conv + cached-replay verify (Triton) + gated norm                                                                      
+  triton_chunk_replay_chain         1       16.19  2.471e+05  THREE launches: TRT's chain with the verify T-loop replaced by the chunk-form (WY) Triton kernel — tensor-core GEMMs, no sequential loop (KDA.md Appendix A)
+  b10_spec_verify_conv_gated        4      7.7978  2.052e+06  ONE kernel: conv4+SiLU + cached-replay verify + ring append + gated RMSNorm (b10 CuTeDSL)                                                                   
+  b10_spec_verify_gated + conv      4      9.0637  1.765e+06  TWO launches: sglang conv, then the b10 kernel without the conv fused — prices the conv fusion                                                              
+  trt_replay_chain                  4       11.73  1.364e+06  THREE launches (production TRT-LLM): conv + cached-replay verify (Triton) + gated norm                                                                      
+  triton_chunk_replay_chain         4       16.79  9.527e+05  THREE launches: TRT's chain with the verify T-loop replaced by the chunk-form (WY) Triton kernel — tensor-core GEMMs, no sequential loop (KDA.md Appendix A)
+  b10_spec_verify_conv_gated       16       11.76  5.442e+06  ONE kernel: conv4+SiLU + cached-replay verify + ring append + gated RMSNorm (b10 CuTeDSL)                                                                   
+  b10_spec_verify_gated + conv     16       12.70  5.038e+06  TWO launches: sglang conv, then the b10 kernel without the conv fused — prices the conv fusion                                                              
+  trt_replay_chain                 16       20.78  3.080e+06  THREE launches (production TRT-LLM): conv + cached-replay verify (Triton) + gated norm                                                                      
+  triton_chunk_replay_chain        16       19.35  3.308e+06  THREE launches: TRT's chain with the verify T-loop replaced by the chunk-form (WY) Triton kernel — tensor-core GEMMs, no sequential loop (KDA.md Appendix A)
+  b10_spec_verify_conv_gated       64       29.47  8.686e+06  ONE kernel: conv4+SiLU + cached-replay verify + ring append + gated RMSNorm (b10 CuTeDSL)                                                                   
+  b10_spec_verify_gated + conv     64       31.18  8.209e+06  TWO launches: sglang conv, then the b10 kernel without the conv fused — prices the conv fusion                                                              
+  trt_replay_chain                 64       58.53  4.374e+06  THREE launches (production TRT-LLM): conv + cached-replay verify (Triton) + gated norm                                                                      
+  triton_chunk_replay_chain        64       37.54  6.819e+06  THREE launches: TRT's chain with the verify T-loop replaced by the chunk-form (WY) Triton kernel — tensor-core GEMMs, no sequential loop (KDA.md Appendix A)
+wrote results/bench_kda_spec_verify_replay_ssm_h12.csv
+wrote results/bench_kda_spec_verify_replay_ssm_h12.png
+===== H=96 (K=V=128) =====
+
+CORRECTNESS: e2e pipeline (conv + verify + gated norm) vs torch oracle — same o / committed SSM / snapshots, H=96 B=4 T=4 pnat=0 (rtol 0.015625; atol 0.02 for o, 0.004 for state buffers)
+  impl                              pass  o_max_abs  ssm_max_abs  snap_max_abs  note                                                          
+  torch_reference                   PASS          0            0             0  eager torch pipeline (the oracle itself)                      
+  b10_spec_snapshot_conv_gated      PASS     0.0096    1.749e-04     2.617e-04  fully fused (safe gate; conv and pre-norm r stay fp32 on-chip)
+  b10_spec_snapshot_gated (noconv)  PASS     0.0077    1.702e-04     2.391e-04  kernel on bf16 post-conv q/k/v                                
+  sglang_save_ssm_chain             PASS     0.0217       0.0035        0.0063  3-kernel chain (canonical gate, bf16 boundaries)              
+  b10_spec_verify_conv_gated        PASS     0.0096       0.0023             -  fully fused (safe gate); SSM = checkpoint folded with its ring
+  b10_spec_verify_gated (noconv)    PASS     0.0077       0.0024             -  kernel on bf16 post-conv q/k/v                                
+  trt_replay_chain                  PASS     0.0209       0.0035             -  3-kernel chain (safe gate, bf16 boundaries)                   
+  triton_chunk_replay_chain         PASS     0.0266       0.0048             -  TRT chain w/ chunk-form verify (WY GEMMs, no T-loop)          
+
+MATCH: b10 vs the scheme baseline, same gate flavor (rtol 0.03125 — cross-flavor: fp32 on-chip vs bf16 kernel boundaries; atol 0.02 for o, 0.004 otherwise)
+  b10 impl                      vs                                  buffer     pass  max_abs  cosine
+  b10_spec_snapshot_conv_gated  sglang_save_ssm_chain               o          PASS   0.0161  1.0000
+  b10_spec_snapshot_conv_gated  sglang_save_ssm_chain               snapshots  PASS   0.0043  1.0000
+  b10_spec_verify_conv_gated    trt_replay_chain                    old_u      PASS   0.0078  1.0000
+  b10_spec_verify_conv_gated    trt_replay_chain                    old_k      PASS   0.0039  1.0000
+  b10_spec_verify_conv_gated    trt_replay_chain                    old_G      PASS        0  1.0000
+  b10_spec_verify_conv_gated    checkpoint untouched (no overflow)  S          PASS        0  1.0000
+
+Benchmark 1: save_ssm e2e step (conv + verify + T full-state snapshots + gated norm) H=96 T=4 (us/iter)
+  impl                            batch  latency_us   tokens_s  note                                                                                                       
+  b10_spec_snapshot_conv_gated        1      8.5389  4.684e+05  ONE kernel: conv4+SiLU + recurrence + T full-state snapshots + gated RMSNorm (b10 CuTeDSL)                 
+  b10_spec_snapshot_gated + conv      1       10.04  3.982e+05  TWO launches: sglang conv, then the b10 kernel without the conv fused — prices the conv fusion             
+  sglang_save_ssm_chain               1       18.12  2.208e+05  THREE launches (production SGLang): causal_conv1d_update + verify T-loop with snapshots + FusedRMSNormGated
+  b10_spec_snapshot_conv_gated        4       26.62  6.012e+05  ONE kernel: conv4+SiLU + recurrence + T full-state snapshots + gated RMSNorm (b10 CuTeDSL)                 
+  b10_spec_snapshot_gated + conv      4       30.32  5.277e+05  TWO launches: sglang conv, then the b10 kernel without the conv fused — prices the conv fusion             
+  sglang_save_ssm_chain               4       49.96  3.203e+05  THREE launches (production SGLang): causal_conv1d_update + verify T-loop with snapshots + FusedRMSNormGated
+  b10_spec_snapshot_conv_gated       16       90.71  7.055e+05  ONE kernel: conv4+SiLU + recurrence + T full-state snapshots + gated RMSNorm (b10 CuTeDSL)                 
+  b10_spec_snapshot_gated + conv     16       94.63  6.763e+05  TWO launches: sglang conv, then the b10 kernel without the conv fused — prices the conv fusion             
+  sglang_save_ssm_chain              16      132.19  4.841e+05  THREE launches (production SGLang): causal_conv1d_update + verify T-loop with snapshots + FusedRMSNormGated
+  b10_spec_snapshot_conv_gated       64      332.77  7.693e+05  ONE kernel: conv4+SiLU + recurrence + T full-state snapshots + gated RMSNorm (b10 CuTeDSL)                 
+  b10_spec_snapshot_gated + conv     64      342.55  7.473e+05  TWO launches: sglang conv, then the b10 kernel without the conv fused — prices the conv fusion             
+  sglang_save_ssm_chain              64      451.65  5.668e+05  THREE launches (production SGLang): causal_conv1d_update + verify T-loop with snapshots + FusedRMSNormGated
+wrote results/bench_kda_spec_verify_save_ssm_h96.csv
+wrote results/bench_kda_spec_verify_save_ssm_h96.png
+
+Benchmark 2: replay_ssm_fused e2e step (conv + cached-replay verify + ring append + gated norm) H=96 T=4 pnat=8 (us/iter)
+  impl                          batch  latency_us   tokens_s  note                                                                                                                                                        
+  b10_spec_verify_conv_gated        1      7.9136  5.055e+05  ONE kernel: conv4+SiLU + cached-replay verify + ring append + gated RMSNorm (b10 CuTeDSL)                                                                   
+  b10_spec_verify_gated + conv      1      9.1808  4.357e+05  TWO launches: sglang conv, then the b10 kernel without the conv fused — prices the conv fusion                                                              
+  trt_replay_chain                  1       14.16  2.825e+05  THREE launches (production TRT-LLM): conv + cached-replay verify (Triton) + gated norm                                                                      
+  triton_chunk_replay_chain         1       17.25  2.318e+05  THREE launches: TRT's chain with the verify T-loop replaced by the chunk-form (WY) Triton kernel — tensor-core GEMMs, no sequential loop (KDA.md Appendix A)
+  b10_spec_verify_conv_gated        4       15.99  1.001e+06  ONE kernel: conv4+SiLU + cached-replay verify + ring append + gated RMSNorm (b10 CuTeDSL)                                                                   
+  b10_spec_verify_gated + conv      4       16.97  9.428e+05  TWO launches: sglang conv, then the b10 kernel without the conv fused — prices the conv fusion                                                              
+  trt_replay_chain                  4       30.87  5.183e+05  THREE launches (production TRT-LLM): conv + cached-replay verify (Triton) + gated norm                                                                      
+  triton_chunk_replay_chain         4       23.41  6.834e+05  THREE launches: TRT's chain with the verify T-loop replaced by the chunk-form (WY) Triton kernel — tensor-core GEMMs, no sequential loop (KDA.md Appendix A)
+  b10_spec_verify_conv_gated       16       55.99  1.143e+06  ONE kernel: conv4+SiLU + cached-replay verify + ring append + gated RMSNorm (b10 CuTeDSL)                                                                   
+  b10_spec_verify_gated + conv     16       56.95  1.124e+06  TWO launches: sglang conv, then the b10 kernel without the conv fused — prices the conv fusion                                                              
+  trt_replay_chain                 16      114.60  5.584e+05  THREE launches (production TRT-LLM): conv + cached-replay verify (Triton) + gated norm                                                                      
+  triton_chunk_replay_chain        16       75.89  8.433e+05  THREE launches: TRT's chain with the verify T-loop replaced by the chunk-form (WY) Triton kernel — tensor-core GEMMs, no sequential loop (KDA.md Appendix A)
+  b10_spec_verify_conv_gated       64      197.76  1.295e+06  ONE kernel: conv4+SiLU + cached-replay verify + ring append + gated RMSNorm (b10 CuTeDSL)                                                                   
+  b10_spec_verify_gated + conv     64      196.06  1.306e+06  TWO launches: sglang conv, then the b10 kernel without the conv fused — prices the conv fusion                                                              
+  trt_replay_chain                 64      419.08  6.109e+05  THREE launches (production TRT-LLM): conv + cached-replay verify (Triton) + gated norm                                                                      
+  triton_chunk_replay_chain        64      234.36  1.092e+06  THREE launches: TRT's chain with the verify T-loop replaced by the chunk-form (WY) Triton kernel — tensor-core GEMMs, no sequential loop (KDA.md Appendix A)
+wrote results/bench_kda_spec_verify_replay_ssm_h96.csv
+wrote results/bench_kda_spec_verify_replay_ssm_h96.png

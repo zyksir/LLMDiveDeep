@@ -1,0 +1,13 @@
+impl,latency_us,batch,draft,heads,tokens_s,note
+b10_spec_snapshot_conv_gated,8.138239979743958,1,4,12,491506.7643564188,ONE kernel: conv4+SiLU + recurrence + T full-state snapshots + gated RMSNorm (b10 CuTeDSL)
+b10_spec_snapshot_gated + conv,9.29472029209137,1,4,12,430351.8421531731,"TWO launches: sglang conv, then the b10 kernel without the conv fused — prices the conv fusion"
+sglang_save_ssm_chain,15.674240589141846,1,4,12,255195.77661522914,THREE launches (production SGLang): causal_conv1d_update + verify T-loop with snapshots + FusedRMSNormGated
+b10_spec_snapshot_conv_gated,8.444160223007202,4,4,12,1894800.616928838,ONE kernel: conv4+SiLU + recurrence + T full-state snapshots + gated RMSNorm (b10 CuTeDSL)
+b10_spec_snapshot_gated + conv,9.826560020446777,4,4,12,1628240.1946060203,"TWO launches: sglang conv, then the b10 kernel without the conv fused — prices the conv fusion"
+sglang_save_ssm_chain,16.934399604797363,4,4,12,944822.3954433757,THREE launches (production SGLang): causal_conv1d_update + verify T-loop with snapshots + FusedRMSNormGated
+b10_spec_snapshot_conv_gated,14.308480024337769,16,4,12,4472872.023523133,ONE kernel: conv4+SiLU + recurrence + T full-state snapshots + gated RMSNorm (b10 CuTeDSL)
+b10_spec_snapshot_gated + conv,15.839359760284424,16,4,12,4040567.3567989445,"TWO launches: sglang conv, then the b10 kernel without the conv fused — prices the conv fusion"
+sglang_save_ssm_chain,22.520320415496826,16,4,12,2841877.8604926025,THREE launches (production SGLang): causal_conv1d_update + verify T-loop with snapshots + FusedRMSNormGated
+b10_spec_snapshot_conv_gated,48.76863956451416,64,4,12,5249274.990772449,ONE kernel: conv4+SiLU + recurrence + T full-state snapshots + gated RMSNorm (b10 CuTeDSL)
+b10_spec_snapshot_gated + conv,53.30687999725342,64,4,12,4802381.981710243,"TWO launches: sglang conv, then the b10 kernel without the conv fused — prices the conv fusion"
+sglang_save_ssm_chain,76.24127864837646,64,4,12,3357761.1044624243,THREE launches (production SGLang): causal_conv1d_update + verify T-loop with snapshots + FusedRMSNormGated

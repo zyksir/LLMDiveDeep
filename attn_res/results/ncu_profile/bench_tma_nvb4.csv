@@ -1,0 +1,5 @@
+impl,latency_us,timing,tokens,nvb,rows,aggregation_us,decoder_layer_us,ideal_GB,ideal_GBps,approx_TFLOPs,speedup,device,hidden_size,available
+sglang_tma,3.0943999687830606,graph,1,4,5,3.094,6.189,8.6e-05,27.8,0.065,1.0,NVIDIA B200,7168,True
+sglang_tma,5.905066430568695,graph,256,4,5,5.905,11.81,0.02202,3729.0,8.701,1.0,NVIDIA B200,7168,True
+sglang_tma,56.2826673189799,graph,4096,4,5,56.283,112.565,0.352322,6259.9,14.606,1.0,NVIDIA B200,7168,True
+sglang_tma,213.26720714569092,graph,16384,4,5,213.267,426.534,1.409286,6608.1,15.419,1.0,NVIDIA B200,7168,True

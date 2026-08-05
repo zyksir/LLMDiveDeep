@@ -1,1 +1,3 @@
-*local_debug*
+__pycache__/
+*.pyc
+.vscode/

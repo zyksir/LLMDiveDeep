@@ -15,9 +15,9 @@ See `requirements.txt` next to this file for the full list. In short:
   missing -- correct but ~50x slower).
 - `flash_attn.cute` (FA4 via CuTe DSL) for the dense baseline; falls
   back to `sglang.jit_kernel.flash_attention_v4`.
-- The block-sparse Triton kernel from sglang's `b10_kernels/sparse_attn/`.
-  Auto-discovered via `SGLANG_B10_KERNELS_DIR` or a set of well-known
-  workspace paths (see `DSA.resolve_b10_sparse_path`).
+- The block-sparse Triton kernel from an external `sparse_attn/` package.
+  Point `SPARSE_ATTN_KERNELS_DIR` at the directory that contains it (see
+  `DSA.resolve_sparse_kernel_path`).
 - An NVIDIA Hopper (SM_90) or Blackwell (SM_100) GPU. Numbers in the README
   are from a single NVIDIA B200.
 
@@ -67,7 +67,12 @@ _LLMDIVEDEEP = os.path.dirname(_HERE)
 if _LLMDIVEDEEP not in sys.path:
     sys.path.insert(0, _LLMDIVEDEEP)
 
-from common.bench_utils import bench_function, print_section  # noqa: E402
+from common.kernel_bench import bench_cuda, print_section  # noqa: E402
+
+
+def bench_function(func, *args, warmup=10, iters=50, **kwargs):
+    """ms per call (local convenience over the shared bench_cuda)."""
+    return bench_cuda(lambda: func(*args, **kwargs), warmup, iters, repeats=3) / 1000
 from DSA import (  # noqa: E402
     INDEXER_BLOCK_SIZE,
     INDEXER_HEAD_DIM,

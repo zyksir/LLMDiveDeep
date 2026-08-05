@@ -1,18 +1,20 @@
 """DeepSeek-style sparse attention (DSA) implementation, isolated from the
 benchmark drivers.
 
-This file holds *everything that reproduces the attention math* — the
-lightning-indexer hot path, the FP8 per-block quantizer, the real
-`nn.Module` indexers (DSv3.2 / GLM-5 / DSv4-C4), and the thin wrappers that
-register the FA4 dense and block-sparse Triton backends. The two
+This file holds *everything that reproduces the attention math* — readable
+paper-form and weight-absorbed MLA, the end-to-end DSA path, the
+lightning-indexer hot path, the FP8 per-block quantizer, the real `nn.Module`
+indexers (DSv3.2 / GLM-5 / DSv4-C4), and thin wrappers that register the FA4
+dense and block-sparse Triton backends. The two
 `bench_*_sparse_attention.py` files import from here and contain only the
 sweep / table-printing logic, so the "what is DSA" code and the "how do we
 time it" code no longer live in one confusing file.
 
 Scope note (language-model attention first):
     The block-sparse FA kernel used as the sparse-attention step below is
-    currently sourced from an internal `b10_kernels/sparse_attn` path (the
-    same generic Triton block-sparse kernel WanVideo's DiT uses for *video*
+    currently sourced from an external block-sparse kernel package (a
+    `sparse_attn/` module) -- the same generic Triton block-sparse kernel
+    WanVideo's DiT uses for *video*
     sparse attention). We reuse it here purely as the LM sparse-attention
     step. The video-specific sparse-attention story (VSA / WanVideo) is out
     of scope for now and can be investigated later.
@@ -42,7 +44,7 @@ INDEXER_HEAD_DIM = 128
 INDEXER_TOPK = 2048
 INDEXER_BLOCK_SIZE = 128  # FP8 quant block size; also matches deep_gemm.
 
-# Sparse-FA block size (matches sglang b10_kernels and the DSA paper tiling).
+# Sparse-FA block size (matches the block-sparse kernel and the DSA paper tiling).
 SPARSE_BLOCK = 64
 
 
@@ -179,29 +181,22 @@ def register_dense_fn() -> Optional[Callable]:
 
 
 # ---------------------------------------------------------------------------
-# Block-sparse FA backend (the sparse-attention step, from sglang b10_kernels)
+# Block-sparse FA backend (the sparse-attention step, external kernel package)
 # ---------------------------------------------------------------------------
 
-def resolve_b10_sparse_path() -> Optional[str]:
-    """Find sglang's b10_kernels/sparse_attn dir so we can import its kernels.
+def resolve_sparse_kernel_path() -> Optional[str]:
+    """Locate the directory holding the block-sparse FA kernel package.
 
-    Tries an env var first (`SGLANG_B10_KERNELS_DIR`), then falls back to a
-    few well-known locations on the host and inside the sgl container.
+    The block-sparse Triton kernel used as the sparse-attention step (PART
+    B/D/E) is not part of upstream sglang; it lives in an external package that
+    exposes a `sparse_attn/` module. Point `SPARSE_ATTN_KERNELS_DIR` at the
+    directory that contains that `sparse_attn/` package. Returns None when the
+    env var is unset or does not point at such a directory -- the block-sparse
+    parts then skip cleanly.
     """
-    env = os.environ.get("SGLANG_B10_KERNELS_DIR")
+    env = os.environ.get("SPARSE_ATTN_KERNELS_DIR")
     if env and os.path.isdir(os.path.join(env, "sparse_attn")):
         return env
-
-    suffix = "sglang/multimodal_gen/runtime/layers/b10_kernels"
-    roots = [
-        "/workspace/model-performance/zyksir/diffusion_inference/sglang/python",
-        "/workspace/sglang/python",  # inside the sgl container
-        "/sgl-workspace/sglang/python",
-    ]
-    for root in roots:
-        path = os.path.join(root, suffix)
-        if os.path.isdir(os.path.join(path, "sparse_attn")):
-            return path
     return None
 
 
@@ -211,16 +206,16 @@ def register_sparse_fa() -> Optional[Tuple[Callable, Callable]]:
     Returns a (build_lut, run) pair. build_lut is called per (S, B, H,
     sparsity) once, then `run(q,k,v,lut_idx,lut_num,sm_scale)` is the hot path.
 
-    NOTE: this kernel currently comes from the internal `b10_kernels` video
-    sparse-attention path (the generic block-sparse Triton kernel WanVideo
-    uses). We reuse it as the LM sparse-attention step; the video-specific
+    NOTE: this kernel comes from an external block-sparse kernel package (the
+    generic block-sparse Triton kernel WanVideo also uses for video sparse
+    attention). We reuse it as the LM sparse-attention step; the video-specific
     usage is out of scope here and can be investigated later.
     """
-    b10_path = resolve_b10_sparse_path()
-    if b10_path is None:
+    kernel_path = resolve_sparse_kernel_path()
+    if kernel_path is None:
         return None
-    if b10_path not in sys.path:
-        sys.path.insert(0, b10_path)
+    if kernel_path not in sys.path:
+        sys.path.insert(0, kernel_path)
     try:
         from sparse_attn.video_sparse_kernel import (
             triton_block_sparse_attn_fwd_openai_prefetch,
@@ -394,14 +389,21 @@ SPECS: Dict[str, IndexerSpec] = {
         compress_ratio=1,
         rope_interleave=False,
     ),
-    # GLM-5 (zai-org/GLM-5): 6144 hidden, 2048 q_lora_rank, indexer hyperparams
-    # match DSv3.2 because GLM-5 inherits DeepseekV2ForCausalLM verbatim.
-    # RoPE is interleaved instead of NeoX.
+    # GLM-5 / 5.1 / 5.2 (zai-org/GLM-5, arXiv 2602.15763; 744B total / 40B active
+    # MoE, 78 layers, 256 experts). Verified against the released config.json:
+    #   hidden_size=6144, q_lora_rank=2048, index_n_heads=32, index_head_dim=128,
+    #   index_topk=2048, indexer_rope_interleave=true, qk_rope_head_dim=64,
+    #   qk_nope_head_dim=192, v_head_dim=256.
+    # NOTE index_n_heads is 32, NOT DSv3.2's 64: GLM halves the indexer head
+    # count just as it halves the main-attention head count (128 -> 64). RoPE on
+    # the indexer is GPT-J interleaved, not NeoX. GLM-5.2 layers IndexShare on
+    # top of the *same* indexer -- that is a runtime index_topk_freq=4 knob, so
+    # it needs no spec field here.
     "glm": IndexerSpec(
-        name="GLM-5 / 5.2",
+        name="GLM-5 / 5.1 / 5.2",
         hidden_size=6144,
         q_lora_rank=2048,
-        index_n_heads=64,
+        index_n_heads=32,
         index_head_dim=128,
         rope_head_dim=64,
         index_topk=2048,
@@ -467,6 +469,228 @@ def _apply_rope_interleave(x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor
     out[..., 0::2] = out_even
     out[..., 1::2] = out_odd
     return out
+
+
+@dataclass(frozen=True)
+class MLASpec:
+    """Shape-only configuration for the readable MLA reference."""
+
+    hidden_size: int
+    num_heads: int
+    q_lora_rank: int
+    kv_lora_rank: int
+    qk_nope_head_dim: int
+    qk_rope_head_dim: int
+    v_head_dim: int
+    rope_interleave: bool = False
+
+
+@dataclass
+class MLAState:
+    """MLA activations; ``kv_latent`` and ``k_rope`` are the persistent cache."""
+
+    q_lora: torch.Tensor
+    q_nope: torch.Tensor
+    q_rope: torch.Tensor
+    kv_latent: torch.Tensor
+    k_rope: torch.Tensor
+
+
+class MLAReference(nn.Module):
+    """Pure-PyTorch Multi-head Latent Attention.
+
+    ``forward_unabsorbed`` implements the straightforward paper equation by
+    reconstructing per-head K/V. ``forward`` implements mathematically
+    equivalent weight-absorbed MLA, which caches only the latent KV and shared
+    RoPE key. Production SGLang replaces these tensor operations with paged,
+    fused kernels; the attention logic remains visible here.
+    """
+
+    def __init__(self, spec: MLASpec, dtype: torch.dtype = torch.bfloat16):
+        super().__init__()
+        if spec.qk_rope_head_dim % 2:
+            raise ValueError("qk_rope_head_dim must be even for RoPE")
+        self.spec = spec
+        self.q_a_proj = nn.Linear(
+            spec.hidden_size, spec.q_lora_rank, bias=False, dtype=dtype
+        )
+        self.q_a_norm = nn.LayerNorm(spec.q_lora_rank, dtype=dtype)
+        self.q_b_proj = nn.Linear(
+            spec.q_lora_rank,
+            spec.num_heads * (spec.qk_nope_head_dim + spec.qk_rope_head_dim),
+            bias=False,
+            dtype=dtype,
+        )
+        self.kv_a_proj = nn.Linear(
+            spec.hidden_size,
+            spec.kv_lora_rank + spec.qk_rope_head_dim,
+            bias=False,
+            dtype=dtype,
+        )
+        self.kv_a_norm = nn.LayerNorm(spec.kv_lora_rank, dtype=dtype)
+        self.kv_b_proj = nn.Linear(
+            spec.kv_lora_rank,
+            spec.num_heads * (spec.qk_nope_head_dim + spec.v_head_dim),
+            bias=False,
+            dtype=dtype,
+        )
+        self.o_proj = nn.Linear(
+            spec.num_heads * spec.v_head_dim,
+            spec.hidden_size,
+            bias=False,
+            dtype=dtype,
+        )
+        self.softmax_scale = (
+            spec.qk_nope_head_dim + spec.qk_rope_head_dim
+        ) ** -0.5
+
+    def project(self, hidden_states: torch.Tensor) -> MLAState:
+        """Run Q/KV compression, per-head Q expansion, and decoupled RoPE."""
+        T = hidden_states.shape[0]
+        s = self.spec
+
+        q_lora = self.q_a_norm(self.q_a_proj(hidden_states))
+        q = self.q_b_proj(q_lora).view(
+            T, s.num_heads, s.qk_nope_head_dim + s.qk_rope_head_dim
+        )
+        q_nope, q_rope = q.split(
+            [s.qk_nope_head_dim, s.qk_rope_head_dim], dim=-1
+        )
+
+        kv = self.kv_a_proj(hidden_states)
+        kv_latent, k_rope = kv.split(
+            [s.kv_lora_rank, s.qk_rope_head_dim], dim=-1
+        )
+        kv_latent = self.kv_a_norm(kv_latent)
+
+        cos, sin = _rope_cossin(T, s.qk_rope_head_dim, hidden_states.device)
+        rope_fn = (
+            _apply_rope_interleave if s.rope_interleave else _apply_rope_neox
+        )
+        return MLAState(
+            q_lora=q_lora,
+            q_nope=q_nope,
+            q_rope=rope_fn(q_rope, cos, sin),
+            kv_latent=kv_latent,
+            k_rope=rope_fn(k_rope, cos, sin),
+        )
+
+    def _reconstruction_weights(self) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Split the per-head K/V up-projection weights."""
+        s = self.spec
+        weight = self.kv_b_proj.weight.view(
+            s.num_heads,
+            s.qk_nope_head_dim + s.v_head_dim,
+            s.kv_lora_rank,
+        )
+        return weight.split([s.qk_nope_head_dim, s.v_head_dim], dim=1)
+
+    @staticmethod
+    def _causal_mask(scores: torch.Tensor) -> torch.Tensor:
+        T_q, T_k = scores.shape[-2:]
+        mask = torch.ones(
+            T_q, T_k, dtype=torch.bool, device=scores.device
+        ).tril(diagonal=T_k - T_q)
+        return scores.masked_fill(~mask, float("-inf"))
+
+    def forward_unabsorbed(
+        self, hidden_states: torch.Tensor, causal: bool = True
+    ) -> torch.Tensor:
+        """Paper form: explicitly reconstruct full per-head K and V."""
+        state = self.project(hidden_states)
+        s = self.spec
+        T = hidden_states.shape[0]
+        kv = self.kv_b_proj(state.kv_latent).view(
+            T, s.num_heads, s.qk_nope_head_dim + s.v_head_dim
+        )
+        k_nope, value = kv.split(
+            [s.qk_nope_head_dim, s.v_head_dim], dim=-1
+        )
+        query = torch.cat([state.q_nope, state.q_rope], dim=-1)
+        key = torch.cat(
+            [
+                k_nope,
+                state.k_rope.unsqueeze(1).expand(-1, s.num_heads, -1),
+            ],
+            dim=-1,
+        )
+        scores = torch.einsum("thd,shd->ths", query, key).float()
+        scores *= self.softmax_scale
+        if causal:
+            scores = self._causal_mask(scores)
+        probs = scores.softmax(dim=-1).to(value.dtype)
+        context = torch.einsum("ths,shd->thd", probs, value)
+        return self.o_proj(context.reshape(T, s.num_heads * s.v_head_dim))
+
+    def attend_absorbed(
+        self,
+        state: MLAState,
+        topk_indices: Optional[torch.Tensor] = None,
+        causal: bool = True,
+    ) -> torch.Tensor:
+        """Attend to compressed MLA state, optionally at DSA-selected indices."""
+        s = self.spec
+        T = state.q_nope.shape[0]
+        k_up, v_up = self._reconstruction_weights()
+
+        # K absorption: move W_K from every cached key into the current query.
+        q_absorbed = torch.einsum("thn,hnc->thc", state.q_nope, k_up)
+
+        if topk_indices is None:
+            scores = torch.einsum(
+                "thc,sc->ths", q_absorbed, state.kv_latent
+            )
+            scores += torch.einsum(
+                "thr,sr->ths", state.q_rope, state.k_rope
+            )
+            scores = scores.float() * self.softmax_scale
+            if causal:
+                scores = self._causal_mask(scores)
+            probs = scores.softmax(dim=-1).to(state.kv_latent.dtype)
+            latent_context = torch.einsum(
+                "ths,sc->thc", probs, state.kv_latent
+            )
+        else:
+            if topk_indices.ndim != 2 or topk_indices.shape[0] != T:
+                raise ValueError("topk_indices must have shape [T, K]")
+            if topk_indices.numel() and (
+                topk_indices.min() < -1
+                or topk_indices.max() >= state.kv_latent.shape[0]
+            ):
+                raise ValueError("topk_indices contains an out-of-range token")
+            if causal and topk_indices.numel():
+                query_pos = torch.arange(T, device=topk_indices.device)[:, None]
+                if torch.any(topk_indices > query_pos):
+                    raise ValueError("causal topk_indices contains a future token")
+
+            # A fixed-width [T, K] tensor needs padding for early causal
+            # queries that have fewer than K predecessors. -1 is the sentinel.
+            valid = topk_indices >= 0
+            safe_indices = topk_indices.clamp_min(0)
+            selected_latent = state.kv_latent[safe_indices]
+            selected_rope = state.k_rope[safe_indices]
+            scores = torch.einsum(
+                "thc,tkc->thk", q_absorbed, selected_latent
+            )
+            scores += torch.einsum(
+                "thr,tkr->thk", state.q_rope, selected_rope
+            )
+            scores = scores.masked_fill(~valid.unsqueeze(1), float("-inf"))
+            probs = (scores.float() * self.softmax_scale).softmax(dim=-1)
+            probs = probs.to(selected_latent.dtype)
+            latent_context = torch.einsum(
+                "thk,tkc->thc", probs, selected_latent
+            )
+
+        # V absorption: aggregate latent values first, then reconstruct V.
+        context = torch.einsum("thc,hvc->thv", latent_context, v_up)
+        return self.o_proj(context.reshape(T, s.num_heads * s.v_head_dim))
+
+    def forward(
+        self, hidden_states: torch.Tensor, causal: bool = True
+    ) -> torch.Tensor:
+        """Dense MLA in its cache-efficient, weight-absorbed form."""
+        return self.attend_absorbed(self.project(hidden_states), causal=causal)
 
 
 class DsaIndexer(nn.Module):
@@ -674,3 +898,53 @@ class Dsv4Indexer(DsaIndexer):
         # Top-k over (smaller) compressor-token space.
         K = min(self.spec.index_topk // self.spec.compress_ratio, T_kv)
         return logits.topk(K, dim=-1).indices
+
+
+@dataclass
+class DSAOutput:
+    """End-to-end DSA result and the token indices chosen by the indexer."""
+
+    hidden_states: torch.Tensor
+    topk_indices: torch.Tensor
+
+
+class DeepSeekSparseAttentionReference(nn.Module):
+    """Readable end-to-end DSA: MLA → lightning indexer → sparse MLA.
+
+    The Python code owns all model logic and tensor transformations. The
+    ``DsaIndexer`` may call ``deep_gemm.fp8_mqa_logits`` when available, but
+    that kernel is only an accelerator for the explicit score-and-top-k math
+    in ``DsaIndexer.forward``.
+    """
+
+    def __init__(
+        self,
+        mla_spec: MLASpec,
+        indexer_spec: IndexerSpec,
+        dtype: torch.dtype = torch.bfloat16,
+    ):
+        super().__init__()
+        if mla_spec.hidden_size != indexer_spec.hidden_size:
+            raise ValueError("MLA and indexer hidden sizes must match")
+        if mla_spec.q_lora_rank != indexer_spec.q_lora_rank:
+            raise ValueError("MLA and indexer Q-LoRA ranks must match")
+        self.mla = MLAReference(mla_spec, dtype=dtype)
+        self.indexer = DsaIndexer(indexer_spec, dtype=dtype)
+
+    def forward(self, hidden_states: torch.Tensor) -> DSAOutput:
+        # 1. MLA creates Q and the compressed [latent KV, shared RoPE K] cache.
+        mla_state = self.mla.project(hidden_states)
+
+        # 2. The independent lightning indexer scores all causal K positions
+        #    cheaply and returns one token list per query, shared by MLA heads.
+        topk_indices = self.indexer(hidden_states, mla_state.q_lora)
+        query_pos = torch.arange(
+            hidden_states.shape[0], device=topk_indices.device
+        )[:, None]
+        topk_indices = topk_indices.masked_fill(topk_indices > query_pos, -1)
+
+        # 3. MLA computes its real softmax attention only on selected tokens.
+        output = self.mla.attend_absorbed(
+            mla_state, topk_indices=topk_indices, causal=True
+        )
+        return DSAOutput(hidden_states=output, topk_indices=topk_indices)

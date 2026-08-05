@@ -1,0 +1,11 @@
+# Validated on NVIDIA B200 / CUDA 13.0.
+sglang[diffusion]==0.5.15.post1
+torch>=2.6
+triton>=3.0
+matplotlib>=3.8
+
+# Optional optimized backends:
+#   Direct FLA comparison:
+#     uv pip install -e ../references/flash-linear-attention --no-deps
+#   Upstream-FLA FlashKDA prefill:
+#     pip install git+https://github.com/MoonshotAI/FlashKDA.git

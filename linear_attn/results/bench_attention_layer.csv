@@ -1,0 +1,7 @@
+backend,batch,latency_us,tokens_s,hidden_size,heads,head_dim,conv_size,activation_dtype,state_dtype
+upstream_fla_attention,4,332.4053446451823,12033.500858025309,2048,16,128,4,bfloat16,float32
+sglang_fused_attention,4,109.7109317779541,36459.44788889106,2048,16,128,4,bfloat16,float32
+upstream_fla_attention,64,335.753599802653,190615.97563694773,2048,16,128,4,bfloat16,float32
+sglang_fused_attention,64,110.72746912638347,577995.6907255859,2048,16,128,4,bfloat16,float32
+upstream_fla_attention,256,332.9834620157878,768806.9505021311,2048,16,128,4,bfloat16,float32
+sglang_fused_attention,256,138.80106608072916,1844366.2374401784,2048,16,128,4,bfloat16,float32
