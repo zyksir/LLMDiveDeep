@@ -26,6 +26,12 @@ First run JIT-builds `k3_comm_cuda` (~5 min) and flashinfer
 
 ## 1. MoE: full re-tune at the REAL target sizes (B = tokens/step)
 
+> **One-command version**: `kimi_k3_layer/run_retune_b80.sh` (host
+> side) waits for idle GPUs, locks clocks, then runs §§1–3 plus the
+> AG duel (`tmp_fc1_ag_duel.py`: qpush-vs-receiver-side per B, with
+> bit-exactness asserted), fc1-shard ALWAYS/NEVER, ref-tail extremes,
+> traces, and the final figure regen. Log: `/tmp/retune_b80.log`.
+
 Targets: **1, 2, 4, 8, 16, 32, 64, 80 — 32 is the most important.**
 The shipped defaults were tuned for 1–16; every threshold pivots
 inside 16–80 and must be re-decided from this run:

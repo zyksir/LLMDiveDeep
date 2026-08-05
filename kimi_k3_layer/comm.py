@@ -773,6 +773,10 @@ def build_fc1_ag(rank: int, world: int, batch: int,
         comms.append(
             OneShotComm(rank, world, max_bytes=max_bytes, grid=32)
         )
+    if batch >= 32:
+        comms.append(
+            OneShotComm(rank, world, max_bytes=max_bytes, grid=64)
+        )
     # fp8-WIRE instances for the sender-side-quantized AG (dedicated:
     # 0xFF sentinel is incompatible with the bf16-wire methods). Half
     # the wire bytes - autotune decides per shape where it pays.
@@ -781,6 +785,9 @@ def build_fc1_ag(rank: int, world: int, batch: int,
     if batch >= 8:
         comms_fp8.append(OneShotComm(rank, world, max_bytes=max_bytes,
                                      grid=32, wire="fp8"))
+    if batch >= 32:
+        comms_fp8.append(OneShotComm(rank, world, max_bytes=max_bytes,
+                                     grid=64, wire="fp8"))
     # copy-engine candidate (SM-free; wins past the Lamport clear-cost
     # crossover and whenever the caller wants compute overlap)
     ces = [CeComm(rank, world, max_bytes=max_bytes)]
