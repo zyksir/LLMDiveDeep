@@ -489,6 +489,118 @@ def _b10_kda_recurrent(inputs: PrefillInputs, shape: Shape) -> Callable:
     return run
 
 
+@KDA_PREFILL.register(
+    "flashinfer_cake_kda",
+    note="FlashInfer CAKE-generated frozen SM100a BF16 recurrent KDA prefill "
+    "(PR #4262 merged 2026-08-03, beta-TMA H=12 fix from #4351 merged "
+    "2026-08-05, installed at flashinfer@38bf507); "
+    "state is BF16 [B,H,K,K] — unavoidable semantic difference vs FP32 state "
+    "in other backends; gate/l2norm/beta fused in kernel (safe gate, lower_bound=-5)",
+)
+def _flashinfer_cake_kda(inputs: PrefillInputs, shape: Shape) -> Callable:
+    """FlashInfer CAKE recurrent KDA prefill (PR #4262, beta fix #4351).
+
+    Dispatch contract (from kda_prefill.py eligibility check):
+    - SM100a B200 / SM103a GB300 only
+    - q/k/v/g BF16 [B, T, H, 128], beta BF16 [B, T, H]
+    - A_log FP32 [H], dt_bias FP32 [H*K]
+    - use_qk_l2norm_in_kernel=True, use_gate_in_kernel=True,
+      beta_is_logit=True, lower_bound finite & negative
+
+    Semantic difference: CAKE state is BF16 [B, H, K, V] (in-place update
+    inside kernel). Other backends use FP32 state. For correctness comparison
+    the BF16 state output has higher quantisation error vs the FP32 reference;
+    we use relaxed atol/rtol in the bench correctness pass.
+
+    The builder reshapes packed [1, B*T, H, D] -> fixed-layout [B, T, H, D]
+    so cu_seqlens is None and the kernel takes the fast fixed-layout path.
+    Initial state is BF16 zeros (no FP32 state pool conversion).
+    """
+    from flashinfer.kda_prefill import (
+        _flash_kda_prefill_is_eligible,
+        _run_flash_kda_prefill,
+    )
+
+    batch = inputs.state.shape[0]
+    total_tokens = inputs.q.shape[1]
+    seq_len = total_tokens // batch
+    H = shape.value_heads
+    K = shape.key_dim
+    V = shape.value_dim
+
+    # Reshape from packed [1, B*T, H, D] to fixed [B, T, H, D]
+    q = inputs.q.view(batch, seq_len, H, K).contiguous()
+    k = inputs.k.view(batch, seq_len, H, K).contiguous()
+    v = inputs.v.view(batch, seq_len, H, V).contiguous()
+    g = inputs.raw_gate.view(batch, seq_len, H, K).contiguous()
+    # beta_logit: logit of the pre-sigmoid beta the kernel will re-sigmoid
+    beta_logit = beta_logit_of(inputs).view(batch, seq_len, H).to(torch.bfloat16).contiguous()
+    # dt_bias as [H, K] FP32
+    dt_bias_hk = inputs.dt_bias.view(H, K).contiguous()
+
+    # BF16 initial state [B, H, V, K] — canonical KDA state layout
+    # NOTE: BF16 precision is the unavoidable semantic difference vs FP32
+    state_bf16 = torch.zeros(batch, H, V, K, device=q.device, dtype=torch.bfloat16)
+
+    # Verify eligibility at build time (raises RuntimeError if dispatch fails)
+    eligible = _flash_kda_prefill_is_eligible(
+        q=q,
+        k=k,
+        v=v,
+        g=g,
+        beta=beta_logit,
+        A_log=inputs.A_log,
+        dt_bias=dt_bias_hk,
+        initial_state=state_bf16,
+        use_qk_l2norm_in_kernel=True,
+        use_gate_in_kernel=True,
+        lower_bound=SAFE_GATE_LOWER_BOUND,
+        cu_seqlens=None,
+        ssm_state_indices=None,
+        num_spec_tokens=None,
+        num_accepted_tokens=None,
+        output=None,
+        initial_state_source=None,
+        initial_state_indices=None,
+        beta_is_logit=True,
+    )
+    if not eligible:
+        raise RuntimeError(
+            "flashinfer_cake_kda: _flash_kda_prefill_is_eligible returned False — "
+            "check device SM, dtypes, head_dim=128, and gate flags"
+        )
+
+    # Separate state buffer per call (kernel updates in-place; we reset to 0
+    # at each timed invocation so the benchmark measures steady-state cost).
+    state_buf = state_bf16.clone()
+
+    def run():
+        state_buf.zero_()
+        out, final_state = _run_flash_kda_prefill(
+            q=q,
+            k=k,
+            v=v,
+            g=g,
+            beta=beta_logit,
+            A_log=inputs.A_log,
+            dt_bias=dt_bias_hk,
+            scale=None,          # defaults to 1/sqrt(128)
+            initial_state=state_buf,
+            output_final_state=True,
+            lower_bound=float(SAFE_GATE_LOWER_BOUND),
+            cu_seqlens=None,
+            output=None,
+            seq_order=None,
+            prefill_workspace=None,
+        )
+        return out, final_state
+
+    # Trigger JIT compilation eagerly at build time (first call compiles
+    # the frozen CUDA kernel; subsequent calls run the cached module).
+    run()
+    return run
+
+
 def get_kda_prefill_backends(
     inputs: PrefillInputs,
     shape: Shape,

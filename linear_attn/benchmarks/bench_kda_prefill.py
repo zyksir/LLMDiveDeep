@@ -84,6 +84,7 @@ SWEEP_SEQ_LENS = [4096, 65536, 204800]
 # built/benched together in one subprocess (no known crashes; flashkda-ptx
 # raises cleanly at build time past its 262144-token envelope, no IMA)
 SWEEP_SAFE_BACKENDS = [
+    "flashinfer_cake_kda",
     "flash_kda",
     "flashkda_ptx_int21",
     "b10_flashkda_triton_c16",
@@ -95,15 +96,32 @@ SWEEP_SAFE_BACKENDS = [
 # intermediate past ~2^31 elements) and a poisoned context kills neighbours
 SWEEP_ISOLATED_BACKENDS = ["fla_kda_chunk", "sglang_kda_chunk"]
 
-def baseline_is_safe(name: str, batch: int, seq: int) -> bool:
-    """Pre-skip upstream Triton kernels that IMA on big shapes (int32 offset
-    overflow) — an illegal access poisons the whole CUDA context, so these
-    cannot be caught at run time. Boundaries measured on B200."""
+def baseline_is_safe(name: str, batch: int, seq: int, heads: int = 96) -> bool:
+    """Pre-skip kernels that IMA on big shapes — illegal access poisons the
+    whole CUDA context, so these cannot be caught at run time.
+    Boundaries measured empirically on B200.
+
+    flashkda_ptx_int21: Despite the Python-level check of 262144 total tokens,
+    the kernel causes IMA at much lower token counts for large head dimensions.
+    Measured limits (H=96, K=V=128):
+      - B=14 T=4096 (57344 tokens): SAFE
+      - B=15 T=4096 (61440 tokens): IMA
+    Root cause: the kernel uses narrower-than-int32 index arithmetic for
+    large heads × tokens × dim products. Conservative safe limit: 57344 for
+    H>=96. For H<=12 (smaller per-head working set) the limit is much higher
+    and the original 262144-token check holds."""
     tokens = batch * seq
     if name == "fla_kda_chunk":
         return tokens <= 1 << 20
     if name == "sglang_kda_chunk":
         return tokens <= 1 << 20 and not (seq >= 204800 and batch >= 4)
+    if name == "flashkda_ptx_int21":
+        from kda.kda_prefill_register import _FLASHKDA_PTX_MAX_TOKENS
+        if tokens > _FLASHKDA_PTX_MAX_TOKENS:
+            return False
+        # Empirical IMA boundary for large head dimensions
+        if heads >= 96:
+            return tokens <= 57344   # B=14, T=4096 verified safe; B=15 crashes
     return True
 
 
@@ -122,6 +140,7 @@ SAFE_GATE_CHECKED = (
     "flashkda_ptx_int21",
     "trtllm_kda_chunk",
     "trtllm_kda_cute",
+    "flashinfer_cake_kda",
 )
 
 
@@ -169,6 +188,11 @@ def check_correctness(shape: Shape) -> None:
                 result = built[name]()
             if name in ("sglang_kda_chunk", "trtllm_kda_chunk", "trtllm_kda_cute"):
                 states[name] = inputs.state
+            elif name == "flashinfer_cake_kda":
+                # CAKE returns (out, state) where state is BF16 [B,H,V,K];
+                # ref state is FP32 [B,H,V,K]; transpose to [B,H,K,V] not needed
+                # (CAKE already returns [B, H, V, K] which is the ref layout)
+                states[name] = result[1]
             elif name == "b10_kda_chunk_prefill":
                 # returns S_T as [B,H,K,V]; the reference state is [B,H,V,K]
                 states[name] = result[1].transpose(-1, -2)
@@ -230,7 +254,7 @@ def run_prefill(args, shape: Shape) -> list[dict]:
                 torch.cuda.empty_cache()
                 continue
             wanted = args.backends or list(KDA_PREFILL.builders)
-            safe = [n for n in wanted if baseline_is_safe(n, batch, seq_len)]
+            safe = [n for n in wanted if baseline_is_safe(n, batch, seq_len, heads=shape.value_heads)]
             for name in set(wanted) - set(safe):
                 print(
                     f"  skip {name} B={batch} S={seq_len}: known IMA (int32 overflow)"

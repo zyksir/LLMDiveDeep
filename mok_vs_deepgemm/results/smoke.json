@@ -1,0 +1,85 @@
+{
+  "contract": {
+    "precision": "BF16 inputs, weights, intermediates, and output",
+    "activation": "unclamped SwiGLU",
+    "shape": {
+      "num_experts": 256,
+      "hidden": 6144,
+      "intermediate": 2048,
+      "topk": 8,
+      "tokens_per_rank": 2048,
+      "num_shared_experts": 1
+    },
+    "ep_size": 4,
+    "timed_boundary": "input/routing copies, global schedule or in-kernel scheduling, dispatch, shared+routed experts, combine, router-weight reduction, and final BF16 output",
+    "launch_mode": "eager CUDA events; per-sample maximum across ranks"
+  },
+  "environment": {
+    "torch": "2.12.0a0+5aff3928d8.nv26.05",
+    "torch_cuda": "13.2",
+    "gpu": "NVIDIA B200",
+    "compute_capability": [
+      10,
+      0
+    ]
+  },
+  "provenance": {
+    "mok_commit": "22fc95ae6e331a738c4a58a227a8b03cac586e12",
+    "deepgemm_commit": "559d79fb6994a58b8a15b4b93bf13ccc16edf247"
+  },
+  "correctness": {
+    "deepgemm_vs_mok": {
+      "max_abs": 0.015625,
+      "relative_l2": 0.002104973432436308,
+      "cosine": 0.9999977845436236,
+      "all_finite": true
+    },
+    "mok_vs_pytorch": {
+      "max_abs": 0.03125,
+      "relative_l2": 0.0041039815918993035,
+      "cosine": 0.9999915869452285,
+      "all_finite": true
+    },
+    "deepgemm_vs_pytorch": {
+      "max_abs": 0.03125,
+      "relative_l2": 0.004130503197040488,
+      "cosine": 0.999991477773882,
+      "all_finite": true
+    }
+  },
+  "methods": {
+    "MoK BF16 full forward": {
+      "median_ms": 2.0343360900878906,
+      "p20_ms": 2.0334912300109864,
+      "p80_ms": 2.12728328704834,
+      "min_ms": 2.032927989959717,
+      "max_ms": 2.1892480850219727,
+      "wall_time_s": 0.0063134729862213135,
+      "rank_max_samples_ms": [
+        2.1892480850219727,
+        2.032927989959717,
+        2.0343360900878906
+      ],
+      "tflops_per_rank": 684.0410543195344
+    },
+    "DeepGEMM BF16 Mega MoE": {
+      "median_ms": 1.5694400072097778,
+      "p20_ms": 1.5538111686706544,
+      "p80_ms": 1.571724820137024,
+      "min_ms": 1.5433919429779053,
+      "max_ms": 1.573248028755188,
+      "wall_time_s": 0.004713097005151212,
+      "rank_max_samples_ms": [
+        1.5433919429779053,
+        1.573248028755188,
+        1.5694400072097778
+      ],
+      "tflops_per_rank": 886.6661978230029
+    }
+  },
+  "dev_loop": {
+    "setup_time_s": 1.4249945449992083,
+    "cold_first_run_time_s": 2.099776984017808,
+    "reference_time_s": 1.4593348889611661
+  }
+}

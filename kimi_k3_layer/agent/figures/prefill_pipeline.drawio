@@ -1,0 +1,103 @@
+<mxfile host="app.diagrams.net">
+  <diagram name="prefill-pipeline-tp8" id="prefill-pipeline-tp8">
+    <mxGraphModel dx="1600" dy="900" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1480" pageHeight="640" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+
+        <mxCell id="title" value="Kimi-K3 MoE prefill (TP-8), S=4096 — TIMELINE-TRUE: X = time, box positions/widths from the measured rank-0 trace (Aug 5, one steady-state iteration = 805 us under profiler). Horizontal overlap = real concurrency. Three physical streams (main, aux-shared, CE) abstract into TWO lanes: critical path + overlap." style="text;html=1;fontSize=13;fontStyle=1;align=left;" vertex="1" parent="1">
+          <mxGeometry x="40" y="10" width="1420" height="50" as="geometry" />
+        </mxCell>
+
+        <!-- time axis: x = 60 + t*0.85 -->
+        <mxCell id="axis" value="" style="endArrow=block;html=1;strokeColor=#000000;" edge="1" parent="1">
+          <mxGeometry relative="1" as="geometry"><mxPoint x="60" y="470" as="sourcePoint" /><mxPoint x="760" y="470" as="targetPoint" /></mxGeometry>
+        </mxCell>
+        <mxCell id="t0" value="0" style="text;html=1;fontSize=10;align=center;" vertex="1" parent="1"><mxGeometry x="50" y="475" width="20" height="20" as="geometry" /></mxCell>
+        <mxCell id="t2" value="200 us" style="text;html=1;fontSize=10;align=center;" vertex="1" parent="1"><mxGeometry x="210" y="475" width="40" height="20" as="geometry" /></mxCell>
+        <mxCell id="t4" value="400 us" style="text;html=1;fontSize=10;align=center;" vertex="1" parent="1"><mxGeometry x="380" y="475" width="40" height="20" as="geometry" /></mxCell>
+        <mxCell id="t6" value="600 us" style="text;html=1;fontSize=10;align=center;" vertex="1" parent="1"><mxGeometry x="550" y="475" width="40" height="20" as="geometry" /></mxCell>
+        <mxCell id="t8" value="800 us" style="text;html=1;fontSize=10;align=center;" vertex="1" parent="1"><mxGeometry x="720" y="475" width="40" height="20" as="geometry" /></mxCell>
+
+        <!-- lanes -->
+        <mxCell id="laneMain" value="CRITICAL PATH (main stream)" style="rounded=0;html=1;fillColor=#F5F5F5;strokeColor=#666666;dashed=1;verticalAlign=top;align=left;fontStyle=1;fontSize=12;spacing=6;" vertex="1" parent="1">
+          <mxGeometry x="40" y="80" width="1420" height="130" as="geometry" />
+        </mxCell>
+        <mxCell id="laneOv" value="OVERLAP LANE (physically two streams: aux = shared expert, CE = all-gather DMA)" style="rounded=0;html=1;fillColor=#E8F5E9;strokeColor=#666666;dashed=1;verticalAlign=top;align=left;fontStyle=1;fontSize=12;spacing=6;" vertex="1" parent="1">
+          <mxGeometry x="40" y="230" width="1420" height="220" as="geometry" />
+        </mxCell>
+
+        <!-- CRITICAL PATH boxes: x = 60 + t*0.85 -->
+        <mxCell id="mGemm" value="input GEMM&#10;[gate|fc1-shard]&#10;0–71" style="rounded=1;html=1;fillColor=#DAE8FC;strokeColor=#6C8EBF;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="60" y="110" width="60" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="mTopk" value="routing topk 69–189&#10;(63 us alone; stretched to 120&#10;by the concurrent gate/up —&#10;latency-bound, still hidden)" style="rounded=1;html=1;fillColor=#DAE8FC;strokeColor=#6C8EBF;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="119" y="110" width="102" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="mMeta" value="expert&#10;metadata&#10;222–277" style="rounded=1;html=1;fillColor=#DAE8FC;strokeColor=#6C8EBF;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="249" y="110" width="47" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="mExperts" value="experts: grouped GEMM1 + act + grouped GEMM2&#10;277–507 (on the FULL latent)" style="rounded=1;html=1;fillColor=#DAE8FC;strokeColor=#6C8EBF;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="296" y="110" width="196" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="mAR" value="latent AR&#10;516–604&#10;88 us" style="rounded=1;html=1;fillColor=#FFE6CC;strokeColor=#D79B00;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="499" y="110" width="75" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="mNorm" value="" style="rounded=1;html=1;fillColor=#DAE8FC;strokeColor=#6C8EBF;fontSize=9;" vertex="1" parent="1">
+          <mxGeometry x="574" y="110" width="10" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="mNormL" value="norm 605–616" style="text;html=1;fontSize=9;rotation=-90;align=center;" vertex="1" parent="1">
+          <mxGeometry x="544" y="135" width="70" height="20" as="geometry" />
+        </mxCell>
+        <mxCell id="mFc2" value="fc2 tail&#10;addmm&#10;618–650" style="rounded=1;html=1;fillColor=#DAE8FC;strokeColor=#6C8EBF;fontSize=9;" vertex="1" parent="1">
+          <mxGeometry x="585" y="110" width="28" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="mArOut" value="final AR (hidden)&#10;668–805&#10;137 us — exposed&#10;(depends on addmm)" style="rounded=1;html=1;fillColor=#FFE6CC;strokeColor=#D79B00;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="628" y="110" width="116" height="80" as="geometry" />
+        </mxCell>
+
+        <!-- OVERLAP lane, row A: aux stream (shared expert) -->
+        <mxCell id="rowA" value="aux:" style="text;html=1;fontSize=10;fontStyle=2;" vertex="1" parent="1">
+          <mxGeometry x="50" y="275" width="40" height="20" as="geometry" />
+        </mxCell>
+        <mxCell id="oGU" value="shared gate/up&#10;68–132 (64 us)" style="rounded=1;html=1;fillColor=#D5E8D4;strokeColor=#82B366;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="118" y="265" width="54" height="55" as="geometry" />
+        </mxCell>
+        <mxCell id="oSiLU" value="" style="rounded=1;html=1;fillColor=#D5E8D4;strokeColor=#82B366;" vertex="1" parent="1">
+          <mxGeometry x="210" y="265" width="9" height="55" as="geometry" />
+        </mxCell>
+        <mxCell id="oDown" value="shared down&#10;186–221 (35)" style="rounded=1;html=1;fillColor=#D5E8D4;strokeColor=#82B366;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="219" y="265" width="30" height="55" as="geometry" />
+        </mxCell>
+        <mxCell id="oDoneL" value="SiLU + down; whole shared chain DONE by t=221 — it overlaps the latency-bound topk/metadata phase, NOT the expert GEMMs and NOT the ARs" style="text;html=1;fontSize=10;align=left;" vertex="1" parent="1">
+          <mxGeometry x="255" y="272" width="440" height="40" as="geometry" />
+        </mxCell>
+
+        <!-- OVERLAP lane, row B: CE stream -->
+        <mxCell id="rowB" value="CE:" style="text;html=1;fontSize=10;fontStyle=2;" vertex="1" parent="1">
+          <mxGeometry x="50" y="360" width="40" height="20" as="geometry" />
+        </mxCell>
+        <mxCell id="oDMA" value="all-gather peer DMA in flight 71–183 (zero SM; invisible to the kernel trace)" style="rounded=1;html=1;fillColor=#FFF2CC;strokeColor=#D6B656;dashed=1;fontSize=10;" vertex="1" parent="1">
+          <mxGeometry x="120" y="350" width="95" height="55" as="geometry" />
+        </mxCell>
+        <mxCell id="oSync" value="arrival&#10;sync" style="rounded=1;html=1;fillColor=#FFF2CC;strokeColor=#D6B656;fontSize=9;" vertex="1" parent="1">
+          <mxGeometry x="215" y="350" width="21" height="55" as="geometry" />
+        </mxCell>
+
+        <!-- dependencies -->
+        <mxCell id="d1" value="latent shard" style="edgeStyle=orthogonalEdgeStyle;html=1;dashed=1;strokeColor=#D6B656;fontSize=9;exitX=0.5;exitY=1;entryX=0;entryY=0.5;" edge="1" parent="1" source="mGemm" target="oDMA"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="d2" value="full latent" style="edgeStyle=orthogonalEdgeStyle;html=1;dashed=1;strokeColor=#D6B656;fontSize=9;exitX=0.5;exitY=0;entryX=0.2;entryY=1;" edge="1" parent="1" source="oSync" target="mMeta"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="d3" value="h" style="edgeStyle=orthogonalEdgeStyle;html=1;dashed=1;strokeColor=#82B366;fontSize=9;exitX=1;exitY=0.5;entryX=0;entryY=0.5;" edge="1" parent="1" source="mGemm" target="oGU"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="d4" value="shared partial (joined long before it is needed)" style="edgeStyle=orthogonalEdgeStyle;html=1;dashed=1;strokeColor=#82B366;fontSize=9;exitX=0.5;exitY=0;entryX=0.3;entryY=1;" edge="1" parent="1" source="oDown" target="mFc2"><mxGeometry relative="1" as="geometry" /></mxCell>
+
+        <!-- the refutation note -->
+        <mxCell id="note1" value="AR WINDOWS MUST STAY COMPUTE-FREE. The NCCL LDMC allreduce is an SM-RESIDENT kernel (~330–430 GB/s effective), not DMA: A/B-measured Aug 5, delaying the shared down GEMM into the latent-AR window displaced the AR and stretched it 88 → 163 us (−262 us e2e at 4k, −403 at 8k). The 88+137 us of exposed AR (~28% of the iteration) is only recoverable with SM-FREE communication (CE/multimem AR)." style="text;html=1;fontSize=11;fontColor=#B71C1C;align=left;" vertex="1" parent="1">
+          <mxGeometry x="760" y="240" width="700" height="110" as="geometry" />
+        </mxCell>
+        <mxCell id="note2" value="Balance (measured GEMMs vs collectives at 4k): shared gate/up 64 &gt; AG 30 wire; shared down 35 ~= latent-AR wire estimate 36 — but the pairing idea FAILS because the AR is not wire-speed (see left). The early schedule wins: the shared chain costs ~0 because topk/metadata are latency-bound." style="text;html=1;fontSize=11;align=left;" vertex="1" parent="1">
+          <mxGeometry x="760" y="360" width="700" height="90" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

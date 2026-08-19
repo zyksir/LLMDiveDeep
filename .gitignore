@@ -1,3 +1,8 @@
 __pycache__/
 *.pyc
 .vscode/
+
+# Local experiments and generated benchmark artifacts.
+*local_debug/
+*local_result/
+*kernel_research/
