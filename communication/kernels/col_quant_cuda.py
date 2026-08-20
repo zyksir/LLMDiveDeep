@@ -990,11 +990,15 @@ def get_module():
     if _mod is None:
         from torch.utils.cpp_extension import load_inline
 
-        os.environ.setdefault("TORCH_CUDA_ARCH_LIST",
-                              f"{torch.cuda.get_device_capability()[0]}."
-                              f"{torch.cuda.get_device_capability()[1]}")
+        from common import arch
+
+        # `setdefault` so a build-time prebuild can pin the target without a
+        # live device (arch.torch_arch_list() reads B10_FORCE_SM first, and the
+        # eager get_device_capability() call this replaced made GPU-less
+        # prebuilds impossible).
+        os.environ.setdefault("TORCH_CUDA_ARCH_LIST", arch.torch_arch_list())
         _mod = load_inline(
-            name="k3_comm_cuda",
+            name=arch.ext_name("k3_comm_cuda"),
             cpp_sources=_CPP_SRC,
             cuda_sources=_CUDA_SRC,
             functions=["ag_lamport", "ag_mxfp8",

@@ -48,6 +48,7 @@ from tensorrt_llm.mapping import Mapping
 from tensorrt_llm.models.modeling_utils import QuantConfig
 from tensorrt_llm.quantization.mode import QuantAlgo
 
+from kimi_k3_layer.capabilities import Capabilities
 from kimi_k3_layer.kernels.dual_out_gemm_cutedsl import dual_out_gemm_cutedsl
 from kimi_k3_layer.kernels.gather_quant import gather_quant_mxfp8
 from kimi_k3_layer.kernels.rmsnorm_cutedsl import rmsnorm_column_slice_cutedsl
@@ -468,6 +469,10 @@ class B10KimiK3MoELayer(KimiK3MoEReference):
         self.prefill_native_expert_min_tokens = prefill_native_expert_min_tokens
         self._exp_config = None
         self._optimized = False
+        # Probed lazily, NOT here: the arch query needs a live CUDA context and
+        # this layer is constructed on CPU (the caller `.cuda()`s it after).
+        # init_optimized re-probes with the process group for rank agreement.
+        self._capabilities: Capabilities | None = None
 
     def init_optimized(self, *, max_batch: int = DECODE_MAX_TOKENS,
                        collectives=None) -> None:
@@ -518,6 +523,22 @@ class B10KimiK3MoELayer(KimiK3MoEReference):
         )
         self._native_op_backend = get_op_backend("trtllm")
 
+        # Capability probe, now that the expert backend exists. `situ_experts`
+        # is read off TRT-LLM's OWN verdict rather than re-derived here: SiTU is
+        # NOT signalled by activation_type -- `_is_situ_activation` is
+        # (activation_type == Swiglu) AND pretrained_config.hidden_act ==
+        # "situ" (fused_moe_trtllm_gen.py:231), so a layer passing Swiglu still
+        # runs SiTU on a real K3 checkpoint. Duplicating that predicate here
+        # would drift; reading the flag cannot. Absent on stock TRT-LLM (no
+        # SiTU support at all), where False is correct.
+        # Probed with the group so every rank runs the same stages -- a
+        # collective-bearing stage enabled on some ranks only deadlocks.
+        self._capabilities = Capabilities.probe(
+            getattr(comm, "group", None),
+            situ_experts=bool(
+                getattr(self._gen_backend, "_is_situ_activation", False)))
+        self._capabilities.log_once(self._rank)
+
         device = fc1.device
         self._overlap_stream = torch.cuda.Stream(device=device)
         self._overlap_fork = torch.cuda.Event()
@@ -552,15 +573,31 @@ class B10KimiK3MoELayer(KimiK3MoEReference):
         base = self._exp_config or measured_config(1)
         return tuple(base.with_axis(axis, value) for value in values)
 
+    @property
+    def capabilities(self) -> Capabilities:
+        """Stage availability for this part; probed on first use, then cached.
+
+        ``init_optimized`` replaces this with a rank-agreed probe. Reading it
+        before then (single-GPU work, EXP sweeps) is fine: the arch gap table is
+        deterministic, so every rank derives the same answer anyway -- the
+        all-reduce exists to catch operator overrides that differ per rank.
+        """
+        if self._capabilities is None:
+            self._capabilities = Capabilities.probe()
+        return self._capabilities
+
     def _config(self, tokens: int) -> ExperimentConfig:
+        # Capability filter applies to EXP too: an explicit sweep config that
+        # names a stage this part has no kernel for would otherwise fail at
+        # dispatch instead of being reported as a downgrade.
         if self.mode is LayerMode.EXP and self._exp_config is not None:
-            return self._exp_config
-        return measured_config(
+            return self.capabilities.filter(self._exp_config)
+        return self.capabilities.filter(measured_config(
             tokens,
             prefill_baseline_max_tokens=self.prefill_baseline_max_tokens,
             prefill_native_expert_min_tokens=(
                 self.prefill_native_expert_min_tokens),
-        )
+        ))
 
     def _ensure_front_weight(self, front: DecodeFront) -> None:
         if (front is DecodeFront.FUSED_FC1_SHARED_GATE_CUTE

@@ -134,8 +134,11 @@ def _fused_ext():
     global _ext
     if _ext is None and os.environ.get("LOW_CONTENTION_CPP", "1") == "1":
         from torch.utils.cpp_extension import load_inline
+
+        from common import arch
+
         _ext = load_inline(
-            name="low_contention_fused_copy",
+            name=arch.ext_name("low_contention_fused_copy"),
             cpp_sources="void fused_copies(torch::Tensor, torch::Tensor,"
                         " int64_t);\n"
                         "void async_copies(torch::Tensor,"

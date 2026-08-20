@@ -390,10 +390,18 @@ def _jit():
         os.environ.setdefault(
             "TORCH_EXTENSIONS_DIR",
             f"/tmp/torchext_r{int(os.environ.get('OMPI_COMM_WORLD_RANK', os.environ.get('RANK', 0)))}")
+        from common import arch
+
+        # Built for the device we are on: sm_100a on B200/GB200, sm_103a on
+        # B300/GB300. multimem.ld_reduce is arch-specific, so one cubin cannot
+        # serve both. The arch goes in the module NAME because torch keys its
+        # build directory on name + source hash only -- two arches sharing a
+        # TORCH_EXTENSIONS_DIR would otherwise reuse the first one's cubin.
         _mod = load_inline(
-            name="b10_multimem_ar", cpp_sources=_CPP, cuda_sources=_CUDA,
+            name=arch.ext_name("b10_multimem_ar"),
+            cpp_sources=_CPP, cuda_sources=_CUDA,
             functions=["mm_ar", "mm_ar_lp", "mm_ar_norm"], verbose=False,
-            extra_cuda_cflags=["-gencode=arch=compute_100a,code=sm_100a"])
+            extra_cuda_cflags=arch.nvcc_gencode())
     return _mod
 
 

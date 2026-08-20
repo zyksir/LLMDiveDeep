@@ -19,6 +19,8 @@ import cutlass.cute as cute
 import cutlass.pipeline as pipeline
 import cutlass.utils as utils
 import cutlass.utils.blackwell_helpers as sm100_utils
+
+from common import arch
 from cutlass import BFloat16, Float32, Int32
 from cutlass._mlir.dialects import llvm
 from cutlass.cute.nvgpu import cpasync, tcgen05
@@ -1106,11 +1108,13 @@ def dual_out_gemm_cutedsl(
     # the launch stream is fetched fresh on EVERY call (graph-capture safe)
     stream = cuda.CUstream(torch.cuda.current_stream().cuda_stream)
 
-    key = (k_dim, n1, n2, cfg)
+    # The arch is part of the cache key: a process that migrates between
+    # devices (or a shared AOT cache) must not replay a B200 cubin on a B300.
+    key = (k_dim, n1, n2, cfg, arch.tag())
     compiled = _KERNEL_CACHE.get(key)
     if compiled is None:
         op = _DualOutGemm(k_dim, n1, n2, cfg)
-        options = "--gpu-arch sm_100a"
+        options = arch.cutedsl_arch_option()
         if cfg.opt0:
             options += (
                 " --ptxas-options '--opt-level=0"
