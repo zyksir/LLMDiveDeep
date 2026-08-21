@@ -1,0 +1,75 @@
+{
+  "schema_version": 1,
+  "source_repository": "https://github.com/sgl-project/sglang.git",
+  "source_commit": "87a09494fa3fbd685bd7c88d6a2dbdd3135de602",
+  "license": {
+    "spdx_identifier": "Apache-2.0",
+    "vendored_path": "LICENSE",
+    "original_path": "LICENSE",
+    "sha256": "1495e1e757ef4d0925a2350563cf5754bb23c51701a8ec4fb3c5cdcbedae6747"
+  },
+  "integrity": "Every file listed in upstream_files is copied byte-for-byte unchanged from source_commit.",
+  "upstream_files": [
+    {
+      "vendored_path": "csrc/moe/route_radix.cuh",
+      "original_path": "python/sglang/kernels/jit/csrc/moe/route_radix.cuh",
+      "sha256": "f93a2c03c15bf98203b0412b96aee97422020e4c3d22b55416afb99dd42e0c29"
+    },
+    {
+      "vendored_path": "include/sgl_kernel/ffi.h",
+      "original_path": "python/sglang/kernels/jit/include/sgl_kernel/ffi.h",
+      "sha256": "def534f44595978151e47056ea77c9eb91c9c1ebdd8f8145425704846f756a8e"
+    },
+    {
+      "vendored_path": "include/sgl_kernel/math.cuh",
+      "original_path": "python/sglang/kernels/jit/include/sgl_kernel/math.cuh",
+      "sha256": "9e63daa4b29bd93bee873eabc7e374636c6c28de237d8b63beb70cca755bdff5"
+    },
+    {
+      "vendored_path": "include/sgl_kernel/source_location.h",
+      "original_path": "python/sglang/kernels/jit/include/sgl_kernel/source_location.h",
+      "sha256": "300026cbeeabe03b10b0c46b70e2e85b19a743cbe9ff462faa1dff4268cf806e"
+    },
+    {
+      "vendored_path": "include/sgl_kernel/tensor.h",
+      "original_path": "python/sglang/kernels/jit/include/sgl_kernel/tensor.h",
+      "sha256": "61747de0460e2075dc6bd298212d860b4bb9812645b33b48316b3648d9ec3d40"
+    },
+    {
+      "vendored_path": "include/sgl_kernel/tile.cuh",
+      "original_path": "python/sglang/kernels/jit/include/sgl_kernel/tile.cuh",
+      "sha256": "3ecd35d51d4198d568906d7a8db30b8b4b5fed07e6c6f722710a9ce2d9619d5f"
+    },
+    {
+      "vendored_path": "include/sgl_kernel/type.cuh",
+      "original_path": "python/sglang/kernels/jit/include/sgl_kernel/type.cuh",
+      "sha256": "4c72b0892e8d003490bdab2633056172a674bc6a9689be552861564c7aaf8edc"
+    },
+    {
+      "vendored_path": "include/sgl_kernel/utils.cuh",
+      "original_path": "python/sglang/kernels/jit/include/sgl_kernel/utils.cuh",
+      "sha256": "f87eafb71f39b9428ec4b3b524c95634f794b4256a6b240a17f2aa5339d92f8b"
+    },
+    {
+      "vendored_path": "include/sgl_kernel/utils.h",
+      "original_path": "python/sglang/kernels/jit/include/sgl_kernel/utils.h",
+      "sha256": "68cd3ec640f9ceaf66f46be99b1e025c2a70dde32ea95ce462a1558af78d3515"
+    },
+    {
+      "vendored_path": "include/sgl_kernel/vec.cuh",
+      "original_path": "python/sglang/kernels/jit/include/sgl_kernel/vec.cuh",
+      "sha256": "ba4ea5d07aa1a2722b48d690462c90cf4d3af2c608de1b97897d38ffb4d3965f"
+    },
+    {
+      "vendored_path": "include/sgl_kernel/warp.cuh",
+      "original_path": "python/sglang/kernels/jit/include/sgl_kernel/warp.cuh",
+      "sha256": "6c911f6e53045e54f1119e6219cc455e0ba2cf9205cf8cdadec81dcfc030c633"
+    }
+  ],
+  "local_files": [
+    {
+      "path": "adapter.cu",
+      "purpose": "Thin TVM-FFI export that instantiates and calls the unchanged RouteRadixKernel<true> host wrapper."
+    }
+  ]
+}

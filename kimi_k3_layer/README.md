@@ -67,11 +67,13 @@ Two caveats:
   first use and downgrading live is **not** implemented — that needs hardware to
   build safely.
 
-Self-checks, no GPU required:
+Self-checks, no GPU required (`common.arch` needs only stdlib; the
+capabilities check needs the TRT-LLM python environment for the layer enums,
+but never touches a device):
 
 ```bash
 python3 -m common.arch                    # flags and cache names for both targets
-python3 -m kimi_k3_layer.capabilities     # every ladder rung
+python3 -m kimi_k3_layer.capabilities     # every ladder rung (TRT-LLM env)
 ```
 
 ## Runtime dispatch

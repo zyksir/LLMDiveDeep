@@ -1000,23 +1000,39 @@ _SMALLB_CONFIGS = {
     "small8": Config(small_batch=True, split_k=8),
     "small4": Config(small_batch=True, split_k=4),
 }
-_TUNED: dict[tuple, Config] = {}
+# Keyed by (k_dim, n1, n2, bucket, arch tag): a config swept on one part is
+# NOT valid on another (same reason the compile cache key carries arch.tag()),
+# so an entry added on B200 can never be replayed on B300.
+_TUNED: dict[tuple, Config] = {
+    # B300 / sm_103a, measured on this node (debug/probe_dualout_config.py,
+    # every candidate checked against DEFAULT_CONFIG before timing):
+    # at 256 rows split_k=2 beats the split_k=4 default 14.43 -> 18.21 us.
+    # Bucket 128 keeps DEFAULT_CONFIG, which wins there (10.18 us).
+    (7168, 1984, 896, 256, "sm103a"): Config(split_k=2, block_n=96),
+}
 
 
 def _bucket(batch: int) -> int:
     b = 1
     while b < batch:
         b *= 2
-    return min(max(b, 1), 128)
+    # Cap == the largest decode batch (b10_kimi_k3_moe_layer.DECODE_MAX_TOKENS,
+    # 128 -> 256 on Aug-19). Not imported, to keep this module free of a layer
+    # dependency; it must be raised with it. Capping below it would silently
+    # hand 256-row launches the 128-row config, and those want different
+    # configs on B300 (split_k 2 vs 4).
+    return min(max(b, 1), 256)
 
 
 def _pick_config(batch: int, k_dim: int, n1: int, n2: int) -> Config:
     if batch <= _TMA_SLOW_MAX_ROWS:
         # B200 sweep: split_k=8 wins at B<=2, split_k=4 at B in 3..9
         tag = "small8" if batch <= 2 else "small4"
-        cfg = _TUNED.get((k_dim, n1, n2, tag), _SMALLB_CONFIGS[tag])
+        cfg = _TUNED.get((k_dim, n1, n2, tag, arch.tag()),
+                         _SMALLB_CONFIGS[tag])
     else:
-        cfg = _TUNED.get((k_dim, n1, n2, _bucket(batch)), DEFAULT_CONFIG)
+        cfg = _TUNED.get((k_dim, n1, n2, _bucket(batch), arch.tag()),
+                         DEFAULT_CONFIG)
     if _EVICT_LAST_ENV:
         cfg = dataclasses.replace(cfg, evict_last_b=True)
         _ensure_l2_carve()

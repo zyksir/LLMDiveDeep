@@ -22,6 +22,50 @@ baselines, and requested artifacts. Ask even when the initial wording appears
 clear. Do not optimize harnesses or compile adjacent stages until this boundary
 is explicitly confirmed.
 
+## The canonical LLMDiveDeep -> TRT-LLM loop
+
+For any kernel or strategy headed to production, run this sequence in order —
+each step gates the next:
+
+1. **Per-kernel bench** (`kimi_k3_layer/kernels/bench_*.py`,
+   `communication/kernel_benchmarks/bench_*.py`,
+   `communication/bench_comm_graph.py`): reproduce the report's number for
+   every kernel the change touches, including the communication kernels.
+2. **No report? Produce one.** A kernel without a recorded number on the
+   current node/arch/width gets a report row before it is used anywhere.
+3. **Beat the baseline.** Most kernels must beat their unchanged open-source
+   or native baseline in the same bench; one that does not needs an explicit
+   recorded reason to exist.
+4. **Layer bench** (`kimi_k3_layer/bench_b10_kimi_k3_moe_layer.py`): the whole
+   MoE layer, matched against the report table (correctness-gated).
+5. **Migrate to TRT-LLM** (`kimi_k3_optim/`) and get the end-to-end serving
+   number. Serving must re-establish every invariant the bench provided
+   (autotuned comm maps, tuned col-AG, fused dispatches) — a layer win does
+   not compose by default.
+
+## Small-setting dev loop, full-setting validation
+
+Always develop on the smallest configuration that exercises the code path,
+then validate on the full configuration before reporting or shipping. The two
+runs answer different questions and neither substitutes for the other:
+
+* **Dev loop (small):** shrink every axis that does not change the code path
+  under test -- layer count (e.g. a 4-layer Kimi-K3: 3 KDA + 1 MLA + MoE keeps
+  every layer type), TP degree (TP2 locally before TP8), batch/size lists
+  (`--sizes 32` before `--sizes all`), iterations (`--iters 5 --n-inputs 1`),
+  random/dummy weights (`load_format: dummy`) instead of checkpoints. Target:
+  seconds-to-minutes per iteration, on one node, so failures localize fast.
+* **Validation (full):** the real degree (TP8/EP8), the full size list, the
+  real layer pattern and activation (SiTU, not a stand-in), table-grade
+  timing (locked clocks, 100 iters, correctness gates). Only this run
+  produces reportable numbers -- a small-setting result is a smoke signal,
+  never a table entry.
+
+Do not skip the small stage to "save time": a config or shape bug found at
+TP8 with a full warmup costs a multi-minute cycle per attempt; the same bug
+at TP2/4-layers costs seconds. And do not ship from the small stage: shard
+widths, thresholds, and collective winners all change with the degree.
+
 ## Highest priority: isolate one kernel first
 
 Decompose a layer, model, or fused pipeline into explicit kernel-sized

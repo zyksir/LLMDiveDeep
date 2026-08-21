@@ -38,6 +38,8 @@ from kimi_k3_layer.kernels.routing import (  # noqa: E402
     route_pack,
     routing_ref,
     routing_trtllm,
+    radix_available,
+    route_radix_for_trtllm_gen,
     unpack_ids,
 )
 
@@ -68,6 +70,17 @@ def check(batch: int, gate_w, gate_bias) -> None:
              - torch.gather(ref_w, 1, ref_order)).abs().max().item()
     assert err_o < 4e-3, f"ours weights err={err_o} B={batch}"  # bf16 out
 
+    # the SHIPPED router (Routing.RADIX): expert sets must match the oracle
+    if radix_available():
+        ids_r, w_r = route_radix_for_trtllm_gen(logits_bf16, gate_bias.float())
+        assert (torch.sort(ids_r)[0] == torch.sort(ref_ids)[0]).all(), \
+            f"radix expert set mismatch B={batch}"
+        err_r = (torch.gather(w_r.float(), 1, torch.argsort(ids_r, dim=-1))
+                 - torch.gather(ref_w, 1, ref_order)).abs().max().item()
+        assert err_r < 4e-3, f"radix weights err={err_r} B={batch}"  # bf16
+    else:
+        err_r = float("nan")
+
     ids_f, scales_f = route_for_fused_moe(logits_bf16, gate_bias.float())
     assert (torch.sort(ids_f)[0] == torch.sort(ref_ids)[0]).all()
     err_f = (torch.gather(scales_f, 1, torch.argsort(ids_f, dim=-1))
@@ -75,7 +88,7 @@ def check(batch: int, gate_w, gate_bias) -> None:
     assert err_f < 1e-5, f"ours fp32 scales err={err_f} B={batch}"
     print(f"  B={batch:<5} expert sets match; weight err "
           f"trtllm {err_t:.2e}, ours(bf16) {err_o:.2e}, "
-          f"ours(fp32) {err_f:.2e}")
+          f"ours(fp32) {err_f:.2e}, radix(bf16) {err_r:.2e}")
 
 
 def main() -> None:
@@ -112,19 +125,22 @@ def main() -> None:
             lambda: routing_trtllm(logits_f32, bias_f))
         t_kernel_ours = bench_cuda(
             lambda: route_pack(logits_bf16, bias_f))
+        t_kernel_radix = (bench_cuda(
+            lambda: route_radix_for_trtllm_gen(logits_bf16, bias_f))
+            if radix_available() else float("nan"))
         t_e2e_trt = bench_cuda(
             lambda: routing_trtllm(gate_gemm_trtllm(h, gate_w), bias_f))
         t_e2e_ours = bench_cuda(
             lambda: route_pack(h @ gate_w.T, bias_f))
-        rows.append((batch, t_kernel_trt, t_kernel_ours,
+        rows.append((batch, t_kernel_trt, t_kernel_ours, t_kernel_radix,
                      t_e2e_trt, t_e2e_ours))
 
-    print("| tokens | trtllm kernel | ours kernel | trtllm e2e | "
-          "ours e2e | e2e speedup |")
-    print("|---|---|---|---|---|---|")
-    for batch, kt, ko, et, eo in rows:
-        print(f"| {batch} | {kt:.2f} | {ko:.2f} | {et:.2f} | {eo:.2f} "
-              f"| {et / eo:.2f}x |")
+    print("| tokens | trtllm kernel | triton kernel | radix (shipped) | "
+          "trtllm e2e | ours e2e | e2e speedup |")
+    print("|---|---|---|---|---|---|---|")
+    for batch, kt, ko, kr, et, eo in rows:
+        print(f"| {batch} | {kt:.2f} | {ko:.2f} | {kr:.2f} | {et:.2f} "
+              f"| {eo:.2f} | {et / eo:.2f}x |")
 
 
 if __name__ == "__main__":

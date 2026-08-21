@@ -17,10 +17,15 @@ NUM_ATTN_RES_BLOCKS = 8
 # MoE (per the Kimi-K3 checkpoint config; latent MoE like TRT's NemotronHMOE).
 NUM_EXPERTS = 896
 TOP_K = 16
-MOE_INTER = 384  # routed expert intermediate size
+# Aligned with the released moonshotai/Kimi-K3 config.json (2026-08-21):
+# moe_intermediate_size=3072, num_shared_experts=2. The previous values
+# (384 x 16) matched the shared product (6144) but ran the ROUTED experts
+# 8x narrower than the checkpoint -- every routed-expert GEMM in earlier
+# tables used inter=384. Shared-expert shapes were always correct.
+MOE_INTER = 3072  # routed expert intermediate size (per HF config)
 MOE_LATENT = 3584  # routed_expert_hidden_size (fc1/fc2 latent)
-NUM_SHARED_EXPERTS = 16
-SHARED_INTER = MOE_INTER * NUM_SHARED_EXPERTS  # 6144
+NUM_SHARED_EXPERTS = 2
+SHARED_INTER = MOE_INTER * NUM_SHARED_EXPERTS  # 6144 (unchanged)
 N_GROUP = 1
 TOPK_GROUP = 1
 ROUTED_SCALING = 1.0
@@ -36,9 +41,9 @@ class K3Shard:
     head_dim: int = HEAD_DIM
     conv_size: int = CONV
     # MoE sharding. Routed experts are EP-sharded (896/tp experts local,
-    # full 384 intermediate): TRT's default moe_tp would leave intermediate
-    # 384/8 = 48, which the trtllm-gen BF16 kernel cannot tile (block_k=64)
-    # and which no real K3 deployment uses. The shared expert is TP-sharded
+    # full 3072 intermediate) to match every real K3 deployment; TRT's
+    # default moe_tp would shard the intermediate instead (3072/8 = 384),
+    # which tiles but is not what production runs. The shared expert is TP-sharded
     # on its intermediate like TRT's GatedMLP; gate/fc1/fc2 are replicated.
     experts_local: int = NUM_EXPERTS
     shared_inter_local: int = SHARED_INTER
@@ -53,22 +58,24 @@ class K3Shard:
 
 
 def k3_shard(name: str) -> K3Shard:
+    """``'tpN'`` for any N that divides the sharded dims (1, 2, 4, 8...)."""
     name = name.lower()
-    if name == "tp8":
-        return K3Shard(
-            name="tp8",
-            tp_size=8,
-            heads_local=HEADS // 8,
-            experts_local=NUM_EXPERTS // 8,
-            shared_inter_local=SHARED_INTER // 8,
-        )
-    if name in ("tp1", "full"):
-        return K3Shard(
-            name="tp1",
-            tp_size=1,
-            heads_local=HEADS,
-        )
-    raise ValueError(f"unknown shard {name!r}; expected tp1 or tp8")
+    if name == "full":
+        name = "tp1"
+    if not name.startswith("tp") or not name[2:].isdigit():
+        raise ValueError(f"unknown shard {name!r}; expected tpN (e.g. tp2)")
+    tp = int(name[2:])
+    if tp < 1 or HEADS % tp or NUM_EXPERTS % tp or SHARED_INTER % tp:
+        raise ValueError(
+            f"tp={tp} does not divide heads/experts/shared dims "
+            f"({HEADS}/{NUM_EXPERTS}/{SHARED_INTER})")
+    return K3Shard(
+        name=f"tp{tp}",
+        tp_size=tp,
+        heads_local=HEADS // tp,
+        experts_local=NUM_EXPERTS // tp,
+        shared_inter_local=SHARED_INTER // tp,
+    )
 
 
 def is_kda_layer(layer_idx: int) -> bool:

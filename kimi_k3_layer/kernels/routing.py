@@ -237,16 +237,9 @@ _RADIX_MODULE = None
 def _radix_module():
     global _RADIX_MODULE
     if _RADIX_MODULE is None:
-        import sys
-        from pathlib import Path
+        from kimi_k3_layer.kernels.routing_radix import load_radix_module
 
-        repo = Path(__file__).resolve().parents[2]
-        if str(repo) not in sys.path:
-            sys.path.insert(0, str(repo))
-        from kimi_k3_layer.kernel_research.kimi_k3_routing_permute_v2.sglang_radix_prebuilt \
-            import load_sglang_radix
-
-        _RADIX_MODULE = load_sglang_radix()
+        _RADIX_MODULE = load_radix_module()
     return _RADIX_MODULE
 
 

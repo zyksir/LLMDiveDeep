@@ -41,12 +41,21 @@ REPO = Path(__file__).resolve().parents[1]
 # Each entry runs in its own process: flashinfer's generators are not
 # thread-safe (shared cubin dir, per-module file locks) and a crash in one
 # module must not take the others down.
+# {arch} is filled per-target-arch by targets(): flashinfer ships per-sm
+# generators for the CUTLASS MoE (sm90/sm100/sm103/sm120), and naming one
+# literally bakes the wrong cubins into every other part's image (a GB300
+# image built sm_100 CUTLASS MoE until this was arch-selected). The
+# trtllm-gen fused-moe generator is only *named* sm100; it serves sm103 too.
 FLASHINFER_TARGETS = {
     "moe_utils": "from flashinfer.jit.moe_utils import gen_moe_utils_module as g",
-    "trtllm_gen_fused_moe_sm100":
+    "trtllm_gen_fused_moe":
         "from flashinfer.fused_moe import gen_trtllm_gen_fused_moe_sm100_module as g",
-    "cutlass_fused_moe_sm100":
-        "from flashinfer.fused_moe import gen_cutlass_fused_moe_sm100_module as g",
+    "cutlass_fused_moe":
+        "from flashinfer.fused_moe import gen_cutlass_fused_moe_sm{arch}_module as g",
+    "trtllm_comm":
+        "from flashinfer.comm import gen_trtllm_comm_module as g",
+    "mxfp8_quantization":
+        "from flashinfer.jit.fp8_quantization import gen_mxfp8_quantization_sm100_module as g",
 }
 
 # Per-module split-compile opt-out. Empty by default: measured cold and solo,
@@ -63,10 +72,13 @@ NO_SPLIT_COMPILE: set[str] = set()
 # never use the CUTLASS MoE backend can drop it with --only and save ~40% of
 # the wall clock.
 BUILD_ORDER = (
-    "cutlass_fused_moe_sm100",
+    "cutlass_fused_moe",
     "kimi_routing_permutation",
-    "trtllm_gen_fused_moe_sm100",
+    "trtllm_gen_fused_moe",
+    "trtllm_comm",
     "moe_utils",
+    "mxfp8_quantization",
+    "kimi_radix",
     "k3_comm_cuda",
     "low_contention_fused_copy",
     "b10_multimem_ar",
@@ -106,6 +118,18 @@ torch.cuda.get_device_capability = lambda *a, **k: (major, minor)
 t = time.time()
 mod = __import__({module!r}, fromlist=[{attr!r}])
 getattr(mod, {attr!r})()
+print(f"SECONDS {{time.time() - t:.1f}}")
+"""
+
+# The vendored SGLang radix router (tvm_ffi build; ~4 min cold). Arch comes
+# from common.arch, which honours B10_FORCE_SM, so this builds GPU-less.
+RADIX_CHILD = """
+import os, sys, time
+sys.path.insert(0, {repo!r})
+os.environ["B10_FORCE_SM"] = {force_sm!r}
+t = time.time()
+from kimi_k3_layer.kernels.routing_radix import warmup
+warmup()
 print(f"SECONDS {{time.time() - t:.1f}}")
 """
 
@@ -173,10 +197,15 @@ def replace_arch(args, target_arch: str):
 
 def targets(args) -> list[tuple[str, str]]:
     cap = tuple(int(part) for part in args.arch.split("."))
-    items = [(name, FLASHINFER_CHILD.format(import_line=line))
+    arch_num = f"{cap[0]}{cap[1]}"  # '100' / '103' for the per-sm generators
+    items = [(name, FLASHINFER_CHILD.format(
+                  import_line=line.format(arch=arch_num)))
              for name, line in FLASHINFER_TARGETS.items()]
     items.append(("kimi_routing_permutation",
                   ROUTING_CHILD.format(repo=str(REPO))))
+    items.append(("kimi_radix",
+                  RADIX_CHILD.format(repo=str(REPO),
+                                     force_sm=f"{cap[0]}.{cap[1]}")))
     items += [(name, INLINE_CHILD.format(repo=str(REPO), cap=cap,
                                          module=module, attr=attr))
               for name, (module, attr) in INLINE_TARGETS.items()]

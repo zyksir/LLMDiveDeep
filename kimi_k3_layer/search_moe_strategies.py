@@ -102,7 +102,7 @@ def _tune_col_ag(cfg: ExperimentConfig, tokens: int, collectives, world: int,
 
 
 def _run_candidate(
-    layer, hidden: torch.Tensor, cfg: ExperimentConfig,
+    layer, inputs: list[torch.Tensor], cfg: ExperimentConfig,
     collectives, world: int, rank: int,
     iterations: int, n_inputs: int, max_decode: int, seed: int,
     reference: torch.Tensor, baseline_us: float,
@@ -111,13 +111,16 @@ def _run_candidate(
 ) -> tuple[float | None, bool]:
     import torch.distributed as dist
 
-    tokens = hidden.shape[0]
+    tokens = inputs[0].shape[0]
     layer.set_experiment_config(cfg)
     out_box: dict = {}
 
-    def fn():
+    # One input buffer per in-graph iteration, exactly like the bench: a
+    # fixed input would freeze one expert-load draw and with it one
+    # permanent straggler rank (see bench_b10_kimi_k3_moe_layer._capture).
+    def fn(index):
         with torch.no_grad():
-            out_box["output"] = layer(hidden)
+            out_box["output"] = layer(inputs[index])
 
     _tune_col_ag(cfg, tokens, collectives, world, max_decode)
 
@@ -136,13 +139,16 @@ def _run_candidate(
         return None, False
 
     latency = _time_graph(
-        graph, iterations, world, hidden=hidden, n_inputs=n_inputs, seed=seed)
+        graph, iterations, world, inputs=inputs, n_inputs=n_inputs, seed=seed)
     output = out_box["output"].clone()
     del graph
 
     valid = False
     if rank == 0:
-        raw, clean, ties = _tie_aware_error(layer, hidden, output, reference)
+        # output/reference hold the LAST captured iteration's result, i.e.
+        # inputs[-1] after _time_graph's restore replay (bench convention).
+        raw, clean, ties = _tie_aware_error(
+            layer, inputs[-1], output, reference)
         valid = clean <= ERR_THRESHOLD
         speedup = (baseline_us - latency) / baseline_us * 100
         print(f"    [{rnd}] {axis}={val_label:<32} {latency:8.2f}us "
@@ -163,7 +169,7 @@ def _run_candidate(
 
 
 def _search_size(
-    layer, hidden: torch.Tensor, collectives, world: int, rank: int,
+    layer, inputs: list[torch.Tensor], collectives, world: int, rank: int,
     tokens: int, baseline_us: float, reference: torch.Tensor,
     iterations: int, n_inputs: int, max_decode: int, n_rounds: int,
 ) -> tuple[ExperimentConfig, float, list[dict]]:
@@ -174,7 +180,7 @@ def _search_size(
 
     def _eval(cfg, rnd, axis, val_label):
         return _run_candidate(
-            layer, hidden, cfg, collectives, world, rank,
+            layer, inputs, cfg, collectives, world, rank,
             iterations, n_inputs, max_decode, seed,
             reference, baseline_us, rnd, axis, val_label, rows)
 
@@ -259,7 +265,7 @@ def _search_size(
 
 
 def _attribute_size(
-    layer, hidden: torch.Tensor, collectives, world: int, rank: int,
+    layer, inputs: list[torch.Tensor], collectives, world: int, rank: int,
     tokens: int, baseline_us: float, reference: torch.Tensor,
     iterations: int, n_inputs: int, max_decode: int,
 ) -> tuple[ExperimentConfig, float, list[dict]]:
@@ -274,7 +280,7 @@ def _attribute_size(
     rows: list[dict] = []
 
     full_us, full_valid = _run_candidate(
-        layer, hidden, config, collectives, world, rank,
+        layer, inputs, config, collectives, world, rank,
         iterations, n_inputs, max_decode, tokens,
         reference, baseline_us, 0, "full_config", "measured", rows,
     )
@@ -309,7 +315,7 @@ def _attribute_size(
                     })
                 continue
             _run_candidate(
-                layer, hidden, candidate, collectives, world, rank,
+                layer, inputs, candidate, collectives, world, rank,
                 iterations, n_inputs, max_decode, tokens,
                 reference, baseline_us, 0, axis, _val_str(value), rows,
             )
@@ -381,15 +387,23 @@ def main() -> None:
     summary_rows: list[dict] = []
 
     for tokens in sizes:
-        torch.manual_seed(tokens)
-        hidden = torch.randn(tokens, HIDDEN, device="cuda", dtype=torch.bfloat16)
         iterations = _graph_iters(tokens, args.iters)
+        generator = torch.Generator(device="cuda").manual_seed(tokens)
+        # one input buffer per in-graph iteration (rank-identical data),
+        # exactly as the bench builds them
+        inputs = [
+            torch.randn(
+                tokens, HIDDEN, generator=generator, device="cuda",
+                dtype=torch.float32,
+            ).to(torch.bfloat16)
+            for _ in range(iterations)
+        ]
 
         ref_box: dict = {}
 
-        def ref_fn():
+        def ref_fn(index):
             with torch.no_grad():
-                ref_box["output"] = layer.baseline_forward(hidden)
+                ref_box["output"] = layer.baseline_forward(inputs[index])
 
         if rank == 0:
             print(f"\n{'='*60}", flush=True)
@@ -397,7 +411,7 @@ def main() -> None:
         ref_graph = _capture(ref_fn, iterations, world)
         baseline_us = _time_graph(
             ref_graph, iterations, world,
-            hidden=hidden, n_inputs=args.n_inputs, seed=tokens)
+            inputs=inputs, n_inputs=args.n_inputs, seed=tokens)
         reference = ref_box["output"].clone()
         del ref_graph
         if rank == 0:
@@ -406,11 +420,11 @@ def main() -> None:
 
         if args.attribution:
             best_cfg, best_us, rows = _attribute_size(
-                layer, hidden, collectives, world, rank, tokens,
+                layer, inputs, collectives, world, rank, tokens,
                 baseline_us, reference, iterations, args.n_inputs, max_decode)
         else:
             best_cfg, best_us, rows = _search_size(
-                layer, hidden, collectives, world, rank, tokens,
+                layer, inputs, collectives, world, rank, tokens,
                 baseline_us, reference, iterations, args.n_inputs,
                 max_decode, args.rounds)
         all_detail_rows.extend(rows)

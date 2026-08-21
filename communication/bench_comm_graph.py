@@ -42,11 +42,25 @@ OP_NAMES = {
 _WORLD_SIZED = {"all_gather", "reduce_scatter", "all_to_all"}
 
 
+def _bs_value(token: str) -> int:
+    token = token.strip().lower()
+    return int(token[:-1]) * 1024 if token.endswith("k") else int(token)
+
+
 def parse_bs(spec: str) -> list[int]:
-    if spec == "1..16k":
-        return [1, 2, 4, 8, 16, 32, 64, 128, 256, 512,
-                1024, 2048, 4096, 8192, 16384]
-    return [int(v) for v in spec.split(",")]
+    """``A..B`` = pow2 sweep from A to B inclusive (k-suffixes allowed),
+    else a comma list. The old parser accepted only the literal ``1..16k``
+    and crashed on any other range."""
+    if ".." in spec:
+        lo_s, _, hi_s = spec.partition("..")
+        lo, hi = _bs_value(lo_s), _bs_value(hi_s)
+        out = []
+        b = lo
+        while b <= hi:
+            out.append(b)
+            b *= 2
+        return out
+    return [_bs_value(v) for v in spec.split(",")]
 
 
 def graph_time_us(fn, calls: int, repeats: int = 7) -> float:

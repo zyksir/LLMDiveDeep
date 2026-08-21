@@ -1,5 +1,9 @@
 # RUNBOOK — re-validating the Kimi-K3 layer work on a fresh node
 
+> **B300/GB300:** see [B300_RETUNE.md](B300_RETUNE.md) — retuned
+> thresholds, per-kernel B300 reports, and the serving-composition fixes
+> (2026-08-21). The sections below predate it and are B200-specific.
+
 Everything below is ready to run. The Aug-5 B=1..80 retune, the
 regime simplification, AND the evening validation pass
 (`moe_optimization.md` Appendix C.1–C.4) completed GPU-clean on the

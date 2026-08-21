@@ -82,15 +82,25 @@ def init_weights(moe, world: int, rank: int, seed: int = 0) -> None:
                 if parameter.dtype == torch.uint8 and "scale" in name:
                     parameter.fill_(124)
                 elif parameter.dtype == torch.uint8:
+                    # Full-tensor staging on the HOST: at checkpoint width the
+                    # int64 randint temp is 73.5 GiB per parameter, which
+                    # OOMs any GPU that is not empty (and wastes HBM even
+                    # when it is). Rank-identical values still hold -- the
+                    # generator seed and draw order are unchanged, only the
+                    # staging device moved.
+                    import zlib
+
+                    cpu_gen = torch.Generator().manual_seed(
+                        int(gen.initial_seed())
+                        ^ zlib.crc32(name.encode()))
                     full = torch.randint(
                         0,
                         256,
                         full_shape,
-                        generator=gen,
-                        device="cuda",
-                        dtype=torch.int64,
-                    ).to(torch.uint8)
-                    parameter.copy_(full[experts])
+                        generator=cpu_gen,
+                        dtype=torch.uint8,
+                    )
+                    parameter.copy_(full[experts].to(parameter.device))
                 else:
                     parameter.zero_()
             if hasattr(backend, "post_load_weights"):

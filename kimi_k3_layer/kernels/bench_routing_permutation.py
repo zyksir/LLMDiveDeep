@@ -171,9 +171,21 @@ def main() -> int:
     for name in names:
         t = time.perf_counter()
         impl = load_impl(name)
-        impl.load()
+        try:
+            impl.load()
+        except Exception as error:  # noqa: BLE001
+            # One unavailable comparison baseline must not take the whole
+            # matrix down: some impls depend on an ignored research tree that
+            # is absent from a fresh checkout, so the DEFAULT matrix would
+            # otherwise be unrunnable rather than merely incomplete. Skipped
+            # impls are reported, so a missing column is never silent.
+            print(f"SKIP   {name:28s} {type(error).__name__}: "
+                  f"{str(error)[:70]}")
+            continue
         impls[name] = impl
         print(f"loaded {name:28s} {time.perf_counter() - t:7.2f}s")
+    if not impls:
+        raise SystemExit("no implementation could be loaded")
     print(f"setup total {time.perf_counter() - t0:.2f}s")
 
     device = torch.device("cuda")

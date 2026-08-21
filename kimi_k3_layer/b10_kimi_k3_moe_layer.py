@@ -78,10 +78,12 @@ SiTUAndMul = _graft(
 ).SiTUAndMul
 
 SMALL_BATCH_MAX_TOKENS = 32
-# 256 since Aug-19 (was 128): the decode path still beats the baseline
-# at 192/256 (see agent/moe_optimization.md), and extending the cap
-# removes half of the awkward 129..2048 fall-back-to-baseline window.
-DECODE_MAX_TOKENS = 256
+DECODE_MAX_TOKENS = 128
+# 128 since the inter=3072 width fix (2026-08-21, GB300 TP8): at the
+# checkpoint expert width the decode plan LOSES at 256 (-0.7% vs
+# baseline) while the prefill plan wins (+2.9%); at 128 decode still
+# wins +12.2%. The Aug-19 extension to 256 was measured at the stale
+# 384 width. B200-at-3072 is unmeasured; re-decide there if it matters.
 # Aug-11 re-search (post route-side-stream/evict-last/zero-copy, and
 # reinforced by the routing-indices graph patch): the multimem tail wins
 # from B=16 up (was <=16 sharded). Both flips hold with the graph patch
@@ -260,8 +262,16 @@ def k3_pretrained_config() -> PretrainedConfig:
     cfg.routed_scaling_factor = ROUTED_SCALING
     cfg.mlp_bias = False
     cfg.rms_norm_eps = RMS_EPS
-    cfg.activation_situ_beta = 1.0
-    cfg.activation_situ_linear_beta = None
+    # Match the released checkpoint (moonshotai/Kimi-K3 config.json) and
+    # feat/k3 serving exactly: hidden_act="situ" makes TRT-LLM's
+    # _is_situ_activation TRUE, so the experts run the SiTU cubins the
+    # production engine runs -- with the old defaults the bench baseline
+    # ran SwiGlu experts and was not measuring feat/k3's path (the gap
+    # capabilities.py documents). Requires a FlashInfer with
+    # ActivationType.Situ (>= the fork's v0.6.18rc1 pin).
+    cfg.hidden_act = "situ"
+    cfg.activation_situ_beta = 4.0
+    cfg.activation_situ_linear_beta = 25.0
     return cfg
 
 
@@ -504,13 +514,19 @@ class B10KimiK3MoELayer(KimiK3MoEReference):
         self._norm_weight = self.latent_norm.weight.data
         self._gate_bias_f32 = (
             self.gate.e_score_correction_bias.data.float().contiguous())
-        # Load the prebuilt radix routing module now (no first-forward
-        # JIT); Routing.RADIX is the measured default everywhere.
-        if not radix_available():
+        # Build/load the radix routing module now (no first-forward JIT);
+        # Routing.RADIX is the measured default everywhere. Skipped when the
+        # stage is switched off, because the capability probe below rewrites
+        # RADIX -> Routing.REFERENCE and the module is then never called --
+        # insisting on it here would make B10_DISABLE_STAGES unusable as the
+        # escape hatch it is documented to be. The probe validates the names.
+        radix_off = "radix_routing" in os.environ.get("B10_DISABLE_STAGES", "")
+        if not radix_off and not radix_available():
             raise RuntimeError(
-                "radix routing artifact missing - build it via "
-                "kimi_k3_layer/kernels/routing.py (kernel_research "
-                "sglang_radix_prebuilt)")
+                "radix routing module unavailable - it builds from the "
+                "vendored source in kimi_k3_layer/kernels/sglang_radix "
+                "(see kernels/routing_radix.py); set "
+                "B10_DISABLE_STAGES=radix_routing to run without it")
 
         backend = getattr(self.experts, "backend", self.experts)
         if type(backend).__name__ != "TRTLLMGenFusedMoE":
@@ -848,7 +864,16 @@ class B10KimiK3MoELayer(KimiK3MoEReference):
             shared_ref = self._fork_shared(
                 h, gate_up=front.shared_gate_up, out=shared_dst)
 
-        routed = self._experts(latent, ids_scales)
+        # Decode experts must honour the same activation-conditional arch
+        # gap the prefill axis does: with SiTU experts on sm_103 the NATIVE
+        # trtllmGen runner has no kernel ("No kernel found ... mEltwiseActType
+        # : 2") -- the hardcoded NATIVE default here was masked while the
+        # bench baseline ran SwiGlu, and crashed the moment the baseline was
+        # aligned with the checkpoint. capabilities.probe already knows.
+        routed = self._experts(
+            latent, ids_scales,
+            ExpertBackend.NATIVE if self._capabilities.native_experts
+            else ExpertBackend.FLASHINFER)
         output = self._tail(routed, shared_ref, tail)
         return output.view(hidden_states.shape)
 

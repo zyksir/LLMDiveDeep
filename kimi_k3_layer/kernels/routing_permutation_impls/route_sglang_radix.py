@@ -17,26 +17,22 @@ NAME = "sgl_radix"
 KIND = "route"
 PROVENANCE = {
     "repository": "https://github.com/sgl-project/sglang",
-    "commit": "7b5410c999be60489c71636443ea036596fe1432",
+    "commit": "87a09494fa3fbd685bd7c88d6a2dbdd3135de602",
     "symbol": "moe/route_radix.cuh::RouteRadixKernel via moe_route_radix",
     "license": "Apache-2.0",
     "kernel_body_unchanged": True,
-    "artifact": "prebuilt cache (kernel_research sglang_radix baseline)",
+    "artifact": "vendored source, JIT-built per arch (kernels/sglang_radix)",
 }
 
 
 def load() -> None:
-    from kimi_k3_layer.kernel_research.kimi_k3_routing_permute_v2.sglang_radix_prebuilt import (
-        load_sglang_radix,
-    )
+    from kimi_k3_layer.kernels.routing_radix import warmup
 
-    load_sglang_radix()
+    warmup()
 
 
 def prepare(batch: int, device, *, logits=None, bias=None, **_) -> Prepared:
-    from kimi_k3_layer.kernel_research.kimi_k3_routing_permute_v2.sglang_radix_prebuilt import (
-        route_radix_into,
-    )
+    from kimi_k3_layer.kernels.routing_radix import route_radix_into
 
     if logits is None:
         logits = torch.empty((batch, NUM_EXPERTS), dtype=torch.float32, device=device)

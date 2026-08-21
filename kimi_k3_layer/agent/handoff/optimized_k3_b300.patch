@@ -1,0 +1,2692 @@
+diff --git a/setup.py b/setup.py
+index be0f840caa..4b9fdd1526 100644
+--- a/setup.py
++++ b/setup.py
+@@ -169,6 +169,15 @@ package_data += [
+     "_torch/auto_deploy/config/*.yaml",
+     # Include CUDA source for fused MoE align extension so runtime JIT can find it in wheels
+     '_torch/auto_deploy/custom_ops/fused_moe/moe_align_kernel.cu',
++    # Same reason for the Kimi-K3 B10 kernels: adapter.cu plus the vendored
++    # SGLang headers are JIT-compiled at layer init, so a wheel without them
++    # fails warm-up with "ninja: error: ... adapter.cu ... missing and no
++    # known rule to make it" the moment TRTLLM_KIMI_B10_MOE=1 is set.
++    '_torch/kimi_k3_optim/b10_kernels/**/*.cu',
++    '_torch/kimi_k3_optim/b10_kernels/**/*.cuh',
++    '_torch/kimi_k3_optim/b10_kernels/**/*.h',
++    '_torch/kimi_k3_optim/b10_kernels/**/*.json',
++    '_torch/kimi_k3_optim/b10_kernels/**/LICENSE',
+     '_torch/auto_deploy/custom_ops/fused_moe/triton_fused_moe_configs/*',
+     '_torch/visual_gen/cute_dsl_kernels/blackwell/attention/cubins/**/*.so',
+     'usage/schemas/*.json',
+diff --git a/tensorrt_llm/_torch/custom_ops/cpp_custom_ops.py b/tensorrt_llm/_torch/custom_ops/cpp_custom_ops.py
+index 19684e9822..8790cf2442 100644
+--- a/tensorrt_llm/_torch/custom_ops/cpp_custom_ops.py
++++ b/tensorrt_llm/_torch/custom_ops/cpp_custom_ops.py
+@@ -22,6 +22,16 @@ import tensorrt_llm.quantization.utils.fp4_utils as fp4_utils
+ from ..._utils import get_sm_version
+ from ..cute_dsl_utils import IS_CUTLASS_DSL_AVAILABLE
+ 
++
++def _op_exists(qualname: str) -> bool:
++    """True when the loaded C++ library exports ``qualname``."""
++    namespace, _, name = qualname.partition("::")
++    try:
++        return hasattr(getattr(torch.ops, namespace), name)
++    except (AttributeError, RuntimeError):
++        return False
++
++
+ if IS_CUTLASS_DSL_AVAILABLE:
+     from .cute_dsl_custom_ops import GroupedGemmInputsHelper
+ 
+@@ -1080,14 +1090,23 @@ def _register_fake():
+             torch.empty_like(residual),
+         ]
+ 
+-    @torch.library.register_fake(
+-        "trtllm::moe_finalize_allreduce_rmsnorm_concat")
+-    def _(input, shared_expert_output, norm_weight,
+-          expanded_idx_to_permuted_idx, expert_scale_factor, workspace, rank,
+-          nranks, eps) -> List[torch.Tensor]:
+-        num_tokens = expanded_idx_to_permuted_idx.shape[0]
+-        routed_output = input.new_empty((num_tokens, input.shape[1]))
+-        return [routed_output, torch.empty_like(shared_expert_output)]
++    # Registered only when the loaded libtensorrt_llm actually exports it.
++    # register_fake() raises at IMPORT time for a missing op, which turns a
++    # kernel this branch adds in C++ into a hard failure for every wheel that
++    # predates it -- even though nothing in Python calls the op (the only
++    # reference is AllReduce.finalize_rmsnorm_concat, which has no caller).
++    # Skipping the meta registration keeps `import tensorrt_llm` working and
++    # still fails loudly, at the call site, for anyone who does invoke it.
++    if _op_exists("trtllm::moe_finalize_allreduce_rmsnorm_concat"):
++
++        @torch.library.register_fake(
++            "trtllm::moe_finalize_allreduce_rmsnorm_concat")
++        def _(input, shared_expert_output, norm_weight,
++              expanded_idx_to_permuted_idx, expert_scale_factor, workspace,
++              rank, nranks, eps) -> List[torch.Tensor]:
++            num_tokens = expanded_idx_to_permuted_idx.shape[0]
++            routed_output = input.new_empty((num_tokens, input.shape[1]))
++            return [routed_output, torch.empty_like(shared_expert_output)]
+ 
+     @torch.library.register_fake("trtllm::renorm_moe_routing_op")
+     def _(router_logits, topk, output_dtype: torch.dtype = None):
+diff --git a/tensorrt_llm/_torch/kimi_k3_optim/b10_kernels/_arch.py b/tensorrt_llm/_torch/kimi_k3_optim/b10_kernels/_arch.py
+new file mode 100644
+index 0000000000..9fcb912c53
+--- /dev/null
++++ b/tensorrt_llm/_torch/kimi_k3_optim/b10_kernels/_arch.py
+@@ -0,0 +1,79 @@
++"""Target-architecture helpers for every JIT compile site in this package.
++
++One place decides what the kernels are built for, so a checkout runs on the
++part it is actually executing on instead of the one it was written on. This
++mirrors LLMDiveDeep's ``common/arch.py``; it is duplicated here only because
++this package cannot import that repo.
++
++Why it matters, concretely -- two failure modes seen on GB300 (sm103):
++
++* ``--gpu-arch sm_100a`` / ``TVM_FFI_CUDA_ARCH_LIST="10.0a"`` build an
++  arch-specific cubin that LOADS on a 10.3 device and then dies at the first
++  launch with "no kernel image is available for execution on the device", i.e.
++  after warm-up, inside serving.
++* build caches keyed on name + source hash but NOT on arch silently hand a
++  B200 artifact to a B300. Every cache key here therefore carries ``tag()``.
++
++``B10_FORCE_SM=10.3`` overrides detection for exercising a target's flags on
++another host; it affects flags and cache naming only, never dispatch.
++"""
++
++from __future__ import annotations
++
++import os
++
++_FORCE_ENV = "B10_FORCE_SM"
++
++
++def sm_version() -> tuple[int, int]:
++    """(major, minor) of the target arch."""
++    forced = os.environ.get(_FORCE_ENV)
++    if forced:
++        major, _, minor = forced.partition(".")
++        return int(major), int(minor or 0)
++    import torch
++
++    return torch.cuda.get_device_capability()
++
++
++def suffix() -> str:
++    """nvcc/CuTeDSL arch suffix, e.g. ``'103a'``."""
++    major, minor = sm_version()
++    return f"{major}{minor}a"
++
++
++def tag() -> str:
++    """Short cache tag, e.g. ``'sm103a'``."""
++    return f"sm{suffix()}"
++
++
++def cuda_arch_macro() -> int:
++    """``__CUDA_ARCH__`` for the target: 1000 on sm_100a, 1030 on sm_103a."""
++    major, minor = sm_version()
++    return major * 100 + minor * 10
++
++
++def cutedsl_arch_option() -> str:
++    """``--gpu-arch`` fragment for ``cute.compile(..., options=...)``."""
++    return f"--gpu-arch sm_{suffix()}"
++
++
++def tvm_ffi_arch_list() -> str:
++    """``TVM_FFI_CUDA_ARCH_LIST`` value, e.g. ``'10.3a'``."""
++    major, minor = sm_version()
++    return f"{major}.{minor}a"
++
++
++def torch_arch_list() -> str:
++    """Value for ``TORCH_CUDA_ARCH_LIST`` (torch wants ``'10.3a'``)."""
++    major, minor = sm_version()
++    return f"{major}.{minor}a"
++
++
++def ext_name(base: str) -> str:
++    """Arch-qualified torch extension name.
++
++    ``torch.utils.cpp_extension`` keys its build dir on name + source hash,
++    NOT on arch -- an unqualified name replays one arch's cubin on another.
++    """
++    return f"{base}_{tag()}"
+diff --git a/tensorrt_llm/_torch/kimi_k3_optim/b10_kernels/dual_out_gemm_cutedsl.py b/tensorrt_llm/_torch/kimi_k3_optim/b10_kernels/dual_out_gemm_cutedsl.py
+index 33e40d77ec..c179aed1ef 100644
+--- a/tensorrt_llm/_torch/kimi_k3_optim/b10_kernels/dual_out_gemm_cutedsl.py
++++ b/tensorrt_llm/_torch/kimi_k3_optim/b10_kernels/dual_out_gemm_cutedsl.py
+@@ -26,6 +26,8 @@ from cutlass.cute.runtime import from_dlpack
+ from cutlass.cutlass_dsl import T, dsl_user_op
+ from cutlass.pipeline import pipeline_init_arrive, pipeline_init_wait
+ 
++from . import _arch
++
+ 
+ # ---------------------------------------------------------------------------
+ # DSM (distributed shared memory) primitives — plain tensor loads through a
+@@ -1106,11 +1108,11 @@ def dual_out_gemm_cutedsl(
+     # the launch stream is fetched fresh on EVERY call (graph-capture safe)
+     stream = cuda.CUstream(torch.cuda.current_stream().cuda_stream)
+ 
+-    key = (k_dim, n1, n2, cfg)
++    key = (k_dim, n1, n2, cfg, _arch.tag())
+     compiled = _KERNEL_CACHE.get(key)
+     if compiled is None:
+         op = _DualOutGemm(k_dim, n1, n2, cfg)
+-        options = "--gpu-arch sm_100a"
++        options = _arch.cutedsl_arch_option()
+         if cfg.opt0:
+             options += (
+                 " --ptxas-options '--opt-level=0"
+diff --git a/tensorrt_llm/_torch/kimi_k3_optim/b10_kernels/routing_radix.py b/tensorrt_llm/_torch/kimi_k3_optim/b10_kernels/routing_radix.py
+index 11e56bbc04..d77fc107d6 100644
+--- a/tensorrt_llm/_torch/kimi_k3_optim/b10_kernels/routing_radix.py
++++ b/tensorrt_llm/_torch/kimi_k3_optim/b10_kernels/routing_radix.py
+@@ -27,18 +27,69 @@ ROUTED_SCALING = 1.0
+ _PKG = Path(__file__).resolve().parent / "sglang_radix"
+ # Exact flags of the validated LLMDiveDeep artifact (ID-exact against the
+ # FP32 oracle); no fast-math — sigmoid rounding must stay unchanged.
+-_CUDA_FLAGS = ("-std=c++20", "-O3", "-DSGL_CUDA_ARCH=1000",
+-               "--expt-relaxed-constexpr")
+ _MODULE = None
+ 
+ 
++def _target() -> tuple[int, int]:
++    """(major, minor) of the device this build targets.
++
++    ``B10_FORCE_SM=10.3`` overrides it, to exercise a target's flags on
++    another host; it affects flags and cache naming only, never dispatch.
++    """
++    forced = os.environ.get("B10_FORCE_SM")
++    if forced:
++        major, _, minor = forced.partition(".")
++        return int(major), int(minor or 0)
++    return torch.cuda.get_device_capability()
++
++
++def _cuda_arch() -> int:
++    """``__CUDA_ARCH__`` for the target: 1000 on sm_100a, 1030 on sm_103a."""
++    major, minor = _target()
++    return major * 100 + minor * 10
++
++
++def _arch_list() -> str:
++    """``TVM_FFI_CUDA_ARCH_LIST`` value, e.g. ``'10.3a'``."""
++    major, minor = _target()
++    return f"{major}.{minor}a"
++
++
++def _arch_tag() -> str:
++    """Module/cache tag, e.g. ``'sm103a'``."""
++    return f"sm{_arch_list().replace('.', '')}"
++
++
++def _cuda_flags() -> tuple[str, ...]:
++    """Compile flags for the target arch.
++
++    ``SGL_CUDA_ARCH`` is load-bearing, not decoration:
++    ``include/sgl_kernel/utils.cuh:122`` asserts
++    ``__CUDA_ARCH__ == SGL_CUDA_ARCH``, so it must track the arch list -- a
++    mismatch is a compile error, which is the *good* failure. Getting both
++    wrong together is the bad one: a 10.0a cubin loads on a 10.3 device and
++    dies at the first launch with "no kernel image is available" (measured
++    on GB300), i.e. after warm-up, inside serving.
++
++    No fast-math: the artifact is ID-exact against the FP32 oracle and
++    sigmoid rounding must stay bit-for-bit unchanged.
++    """
++    return ("-std=c++20", "-O3", f"-DSGL_CUDA_ARCH={_cuda_arch()}",
++            "--expt-relaxed-constexpr")
++
++
+ def _source_hash() -> str:
+     digest = hashlib.sha256()
+     for f in sorted(_PKG.rglob("*")):
+         if f.is_file():
+             digest.update(f.name.encode())
+             digest.update(f.read_bytes())
+-    digest.update(" ".join(_CUDA_FLAGS).encode())
++    digest.update(" ".join(_cuda_flags()).encode())
++    # Not implied by the flags, and the reason a flags-only key is unsafe:
++    # TVM_FFI_CUDA_ARCH_LIST selects the cubin, so two arches must never
++    # share a cache entry (a baked image or an NFS home would otherwise
++    # hand a B200 .so to a B300).
++    digest.update(_arch_list().encode())
+     return digest.hexdigest()[:16]
+ 
+ 
+@@ -53,18 +104,18 @@ def _load():
+         os.environ.get("TRTLLM_KIMI_K3_KERNEL_CACHE",
+                        Path.home() / ".cache" / "trtllm-kimi-k3")
+     ) / f"sglang_radix_{_source_hash()}_ffi{tvm_ffi.__version__}"
+-    artifact = cache / "routing_radix_sm100.so"
++    artifact = cache / f"routing_radix_{_arch_tag()}.so"
+     if not artifact.is_file():
+         cache.mkdir(parents=True, exist_ok=True)
+-        env = {"TVM_FFI_CUDA_ARCH_LIST": "10.0a", "MAX_JOBS": "1"}
++        env = {"TVM_FFI_CUDA_ARCH_LIST": _arch_list(), "MAX_JOBS": "1"}
+         saved = {k: os.environ.get(k) for k in env}
+         os.environ.update(env)
+         try:
+             built = Path(build(
+-                name="routing_radix_sm100",
++                name=f"routing_radix_{_arch_tag()}",
+                 cuda_files=str(_PKG / "adapter.cu"),
+                 extra_cflags=["-std=c++20", "-O3"],
+-                extra_cuda_cflags=list(_CUDA_FLAGS),
++                extra_cuda_cflags=list(_cuda_flags()),
+                 extra_include_paths=[str(_PKG / "include"), str(_PKG / "csrc")],
+                 build_directory=str(cache),
+             ))
+diff --git a/tensorrt_llm/_torch/kimi_k3_optim/capabilities.py b/tensorrt_llm/_torch/kimi_k3_optim/capabilities.py
+new file mode 100644
+index 0000000000..7bfedebef4
+--- /dev/null
++++ b/tensorrt_llm/_torch/kimi_k3_optim/capabilities.py
+@@ -0,0 +1,169 @@
++"""Per-stage kill switches for the B10 Kimi-K3 MoE layer.
++
++Every optimization this package adds can be switched OFF in production with an
++environment variable, no code change and no image rebuild -- because a tuned
++kernel that is wrong on some node must be a config rollback, not an incident.
++Three levels:
++
++* ``TRTLLM_KIMI_B10_MOE=0``  (modeling_kimi_k3.py) -- master switch, the stock
++  layer is used and nothing in this package runs.
++* ``KIMI_B10_DISABLE_STAGES=stage1,stage2`` -- switch off individual
++  optimizations; each ladder ends at a rung every part can run (reference
++  routing, packed tail, full fc1 ...), so the layer contract is unchanged.
++* ``KIMI_B10_COMM_NCCL_ONLY=1``  (communication/collectives.py) -- every
++  collective goes through NCCL: no symmetric-memory rendezvous, no CUDA-IPC,
++  no NVLS multimem. This is the switch the 2-node GB300 bring-up had to
++  hot-patch into ``available()`` by hand; NCCL is the one transport that
++  works across nodes over MNNVL (measured 657 GB/s busbw cross-node).
++
++Stage names (see ``filter`` for the exact ladders)::
++
++    fused_front_cute        decode front: fused CuTeDSL dual-out GEMM
++    radix_routing           SGLang RouteRadixKernel top-16
++    multimem_tail           decode tail: multimem full-fc2
++    sharded_fc2_tail        decode tail: sharded fc2 + output reduce
++    route_side_stream       routing kernel off the main stream
++    sharded_prefill_fc1     prefill fc1 column shard (+ col-AG gather)
++    fc2_shard_prefill_tail  prefill tail: fc2 shard
++    prefill_overlap         shared-branch overlap during prefill
++
++Decided ONCE at layer init, outside any timed or captured region, and
++**agreed across ranks** (all-reduce MIN over the flag bitmask): a stage that
++carries a collective must be on everywhere or nowhere, or ranks deadlock in
++mismatched collectives instead of failing loudly.
++
++Ported from LLMDiveDeep ``kimi_k3_layer/capabilities.py``; the expert-backend
++(native vs FlashInfer) decision is NOT a stage here because it must be made
++in ``__init__`` before weights load -- see the arch+SiTU gate in
++``moe_layer.py``.
++"""
++
++from __future__ import annotations
++
++import os
++from dataclasses import dataclass, replace
++from typing import TYPE_CHECKING
++
++if TYPE_CHECKING:  # avoid a moe_layer import cycle
++    from .moe_layer import ExperimentConfig
++
++_DISABLE_ENV = "KIMI_B10_DISABLE_STAGES"
++
++_STAGES: tuple[str, ...] = (
++    "fused_front_cute",
++    "radix_routing",
++    "multimem_tail",
++    "sharded_fc2_tail",
++    "route_side_stream",
++    "sharded_prefill_fc1",
++    "fc2_shard_prefill_tail",
++    "prefill_overlap",
++)
++
++
++@dataclass(frozen=True)
++class Capabilities:
++    """One flag per gated stage. True = the fast implementation may run."""
++
++    fused_front_cute: bool = True
++    radix_routing: bool = True
++    multimem_tail: bool = True
++    sharded_fc2_tail: bool = True
++    route_side_stream: bool = True
++    sharded_prefill_fc1: bool = True
++    fc2_shard_prefill_tail: bool = True
++    prefill_overlap: bool = True
++
++    @classmethod
++    def probe(cls, group=None) -> "Capabilities":
++        disabled = {
++            name.strip()
++            for name in os.environ.get(_DISABLE_ENV, "").split(",")
++            if name.strip()
++        }
++        unknown = disabled.difference(_STAGES)
++        if unknown:
++            raise ValueError(
++                f"{_DISABLE_ENV} names unknown stage(s): {sorted(unknown)}; "
++                f"valid: {sorted(_STAGES)}")
++        caps = cls(**{stage: stage not in disabled for stage in _STAGES})
++        return caps._agree(group)
++
++    def _agree(self, group) -> "Capabilities":
++        """All-reduce MIN so every rank runs the same stages."""
++        import torch
++        import torch.distributed as dist
++
++        if group is None or not dist.is_available() \
++                or not dist.is_initialized():
++            return self
++        if dist.get_world_size(group) == 1:
++            return self
++        flags = torch.tensor(
++            [int(getattr(self, name)) for name in _STAGES],
++            dtype=torch.int32, device="cuda")
++        dist.all_reduce(flags, op=dist.ReduceOp.MIN, group=group)
++        return replace(self, **{
++            name: bool(value)
++            for name, value in zip(_STAGES, flags.tolist())})
++
++    def log_once(self, rank: int = 0) -> None:
++        if rank != 0:
++            return
++        off = [stage for stage in _STAGES if not getattr(self, stage)]
++        if not off:
++            print("[B10-KIMI-MOE] all optimization stages enabled",
++                  flush=True)
++            return
++        # Loud on purpose: "running degraded" must be visible in prod logs,
++        # not inferred from a latency regression.
++        print(f"[B10-KIMI-MOE] DEGRADED via {_DISABLE_ENV}: "
++              f"{len(off)} stage(s) off", flush=True)
++        for stage in off:
++            print(f"[B10-KIMI-MOE]   {stage}: disabled", flush=True)
++
++    def filter(self, config: "ExperimentConfig") -> "ExperimentConfig":
++        """Rewrite a plan so it only names enabled implementations.
++
++        Each ladder ends at a rung that needs no custom kernel and no
++        non-NCCL collective, so the result is always executable.
++        """
++        from .moe_layer import (
++            DecodeFront, DecodeTail, PrefillFC1, PrefillTail, Routing,
++        )
++
++        changes: dict[str, object] = {}
++        # front: fused CuTeDSL dual-out -> separate sharded fc1 -> full fc1
++        if (not self.fused_front_cute and config.decode_front
++                is DecodeFront.FUSED_FC1_SHARED_GATE_CUTE):
++            changes["decode_front"] = (
++                DecodeFront.SEPARATE_SHARDED_FC1 if self.sharded_prefill_fc1
++                else DecodeFront.SEPARATE_FULL_FC1)
++        # routing: radix kernel -> reference gate + top-k
++        if not self.radix_routing and config.routing is Routing.RADIX:
++            changes["routing"] = Routing.REFERENCE
++        # decode tail: multimem full-fc2 -> sharded fc2 -> packed latent
++        tail = config.decode_tail
++        if (not self.multimem_tail
++                and tail is DecodeTail.FULL_FC2_MULTIMEM_SHARED_REDUCE):
++            tail = (DecodeTail.SHARDED_FC2_OUTPUT_REDUCE
++                    if self.sharded_fc2_tail
++                    else DecodeTail.PACKED_LATENT_SHARED_REDUCE)
++        if (not self.sharded_fc2_tail
++                and tail is DecodeTail.SHARDED_FC2_OUTPUT_REDUCE):
++            tail = DecodeTail.PACKED_LATENT_SHARED_REDUCE
++        if tail is not config.decode_tail:
++            changes["decode_tail"] = tail
++        if not self.route_side_stream and config.route_on_side_stream:
++            changes["route_on_side_stream"] = False
++        # prefill fc1: sharded (+ col-AG gather) -> full
++        if (not self.sharded_prefill_fc1
++                and config.prefill_fc1 is PrefillFC1.SHARDED):
++            changes["prefill_fc1"] = PrefillFC1.FULL
++        # prefill tail: fc2 shard -> packed
++        if (not self.fc2_shard_prefill_tail
++                and config.prefill_tail is PrefillTail.FC2_SHARD):
++            changes["prefill_tail"] = PrefillTail.PACKED
++        if not self.prefill_overlap and config.prefill_overlap_shared_branch:
++            changes["prefill_overlap_shared_branch"] = False
++        return replace(config, **changes) if changes else config
+diff --git a/tensorrt_llm/_torch/kimi_k3_optim/communication/backends/col_quant_backend.py b/tensorrt_llm/_torch/kimi_k3_optim/communication/backends/col_quant_backend.py
+new file mode 100644
+index 0000000000..b01a8e1ece
+--- /dev/null
++++ b/tensorrt_llm/_torch/kimi_k3_optim/communication/backends/col_quant_backend.py
+@@ -0,0 +1,29 @@
++"""Backend wrapper for column all-gather and fused quantization."""
++
++from __future__ import annotations
++
++import torch
++
++from ..kernels.col_quant import (
++    TunedAllGather,
++    build_tuned_all_gather,
++    nccl_all_gather_cols as _nccl_all_gather_cols,
++)
++
++
++def nccl_all_gather_cols(x: torch.Tensor) -> torch.Tensor:
++    return _nccl_all_gather_cols(x)
++
++
++def build_col_quant_all_gather(
++    rank: int,
++    world: int,
++    max_rows: int,
++    max_output_columns: int,
++) -> TunedAllGather:
++    return build_tuned_all_gather(
++        rank,
++        world,
++        max_rows,
++        max_output_columns,
++    )
+diff --git a/tensorrt_llm/_torch/kimi_k3_optim/communication/collectives.py b/tensorrt_llm/_torch/kimi_k3_optim/communication/collectives.py
+index 12775b72e8..ffc94bd7ab 100644
+--- a/tensorrt_llm/_torch/kimi_k3_optim/communication/collectives.py
++++ b/tensorrt_llm/_torch/kimi_k3_optim/communication/collectives.py
+@@ -3,12 +3,13 @@
+ from __future__ import annotations
+ 
+ import math
++import os
+ 
+ import torch
+ import torch.distributed as dist
+ 
+-from .backends import (b10_multimem_backend, nccl_backend,
+-                       torch_symm_backend, trt_backend)
++from .backends import (b10_multimem_backend, col_quant_backend,
++                       nccl_backend, torch_symm_backend, trt_backend)
+ from .context import Ctx
+ 
+ 
+@@ -28,6 +29,8 @@ class Collectives:
+         *,
+         max_hidden: int = 10752,
+         enable_trt: bool = True,
++        col_ag_max_rows: int = 0,
++        col_ag_max_output_columns: int = 0,
+         **_: object,
+     ) -> None:
+         self.group = group
+@@ -38,16 +41,57 @@ class Collectives:
+         self.max_hidden = max_hidden
+         self.device = device or torch.device("cuda", torch.cuda.current_device())
+         self._auto_map: dict[tuple[str, int, int], tuple[str, float]] = {}
++        # KIMI_B10_COMM_FALLBACK: bypass this package's custom transports --
++        # no symmetric-memory rendezvous, no CUDA-IPC workspace, no NVLS
++        # multimem (the single-NVLink-domain transports crash cross-node
++        # with cudaErrorInvalidDevice). Two values:
++        #
++        #   trtllm  stock TRT-LLM AllReduce with its AUTO strategy search,
++        #           i.e. exactly what the baseline layer runs -- per size and
++        #           topology it picks TWOSHOT/ONESHOT, NCCL_SYMMETRIC, MNNVL
++        #           or NCCL on its own. The default fallback.
++        #   nccl    plain NCCL for everything; the maximally-conservative
++        #           setting (measured 657 GB/s busbw cross-node on GB300).
++        #
++        # This is the supported form of the bring-up hot-patch that forced
++        # torch_symm/trt available() -> False and _fits("b10_multimem") ->
++        # False by editing dist-packages at container start.
++        self._fallback = os.environ.get(
++            "KIMI_B10_COMM_FALLBACK", "").strip().lower()
++        if self._fallback not in ("", "trtllm", "nccl"):
++            raise ValueError(
++                f"KIMI_B10_COMM_FALLBACK={self._fallback!r}: "
++                "expected 'trtllm' or 'nccl'")
++        self._stock_ar = None
+         self._trt: trt_backend.TrtBackend | bool | None = (
+-            None if enable_trt else False)
++            None if enable_trt and not self._fallback else False)
+         self._symm = None
+         self._mm_ar = None
++        self._col_ag = None
+         if self.world == 1:
+             return
++        if self._fallback and self.rank == 0:
++            print(f"[B10-KIMI-MOE] KIMI_B10_COMM_FALLBACK="
++                  f"{self._fallback}: custom comm transports off", flush=True)
+         self.ctx = Ctx(group, self.world, self.rank, self.device, dtype,
+                        max_numel)
+-        if torch_symm_backend.available():
++        if not self._fallback and torch_symm_backend.available():
+             self._symm = torch_symm_backend.TorchSymmBackend(self.ctx)
++        if col_ag_max_rows > 0 and not self._fallback:
++            # Bounded fused column-AG (+MXFP8 quantize on the write-out),
++            # ported from LLMDiveDeep. Without it the decode front paid a
++            # NCCL ring AG + separate quantize per layer per step (traced
++            # ~1.8 ms per 92-layer decode step on GB300); the fused kernel
++            # measured 16.3 us vs 73.7 us reference on the same node.
++            # Size the symm slots EXACTLY (rows x gathered columns). The
++            # max_numel-derived default sized ~1.4M columns and OOM'd a
++            # 93-layer GB300 node that had 1 GiB of headroom left.
++            columns = col_ag_max_output_columns or max(
++                1, max_numel // max(1, col_ag_max_rows))
++            self._col_ag = col_quant_backend.build_col_quant_all_gather(
++                self.rank, self.world, col_ag_max_rows, columns)
++            self._col_ag_max_rows = col_ag_max_rows
++            self._col_ag_max_numel = col_ag_max_rows * columns
+ 
+     def import_auto_map(self, rows: list[dict]) -> None:
+         for row in rows:
+@@ -65,12 +109,38 @@ class Collectives:
+                 self._trt = trt_backend.TrtBackend(self.ctx)
+         return self._trt
+ 
++    def _stock_state(self):
++        """Stock TRT-LLM AllReduce (AUTO strategy), built lazily once."""
++        if self._stock_ar is None:
++            import torch.cuda as tcuda
++
++            from tensorrt_llm._torch.distributed.ops import AllReduce
++            from tensorrt_llm.functional import AllReduceStrategy
++            from tensorrt_llm.mapping import Mapping
++
++            self._stock_ar = AllReduce(
++                mapping=Mapping(
++                    world_size=self.world,
++                    tp_size=self.world,
++                    rank=self.rank,
++                    gpus_per_node=min(self.world, tcuda.device_count()),
++                ),
++                strategy=AllReduceStrategy.AUTO,
++            )
++        return self._stock_ar
++
+     def _multimem_state(self):
++        if self._fallback:
++            raise RuntimeError(
++                "b10_multimem requested under KIMI_B10_COMM_FALLBACK -- "
++                "a caller bypassed pick(); route collectives through pick()")
+         if self._mm_ar is None:
+             self._mm_ar = b10_multimem_backend.B10MultimemBackend(self.ctx)
+         return self._mm_ar
+ 
+     def _fits(self, impl: str, shape: tuple[int, ...]) -> bool:
++        if self._fallback and impl not in ("nccl", "trtllm"):
++            return False
+         numel = math.prod(shape)
+         if impl.startswith("torch_symm"):
+             return self._symm is not None and numel <= self.max_numel
+@@ -81,6 +151,11 @@ class Collectives:
+     def pick(self, op: str, shape) -> str:
+         if self.world == 1:
+             return "local"
++        if self._fallback:
++            # all_reduce gets the stock AUTO module; every other op runs
++            # NCCL, which is what the baseline layer uses for them anyway.
++            return ("trtllm" if self._fallback == "trtllm"
++                    and op == "all_reduce" else "nccl")
+         shape = tuple(shape)
+         key = (op, shape[-1], _next_pow2(shape[0]))
+         impl = self._auto_map.get(key, ("", 0.0))[0]
+@@ -128,6 +203,10 @@ class Collectives:
+             return self._multimem_state().all_reduce(x)
+         if impl == "nccl":
+             return nccl_backend.all_reduce(self.group, x)
++        if impl == "trtllm":
++            # Stock AllReduce returns a list under some fusion ops; the
++            # plain path returns the reduced tensor.
++            return self._stock_state()(x)
+         raise ValueError(f"unknown all_reduce impl {impl!r}")
+ 
+     def all_gather(self, x: torch.Tensor,
+@@ -163,16 +242,46 @@ class Collectives:
+             quant: str = "mxfp8") -> tuple[torch.Tensor, torch.Tensor]:
+         if quant != "mxfp8":
+             raise ValueError("only MXFP8 column gather is supported")
++        if (self._col_ag is not None
++                and x.shape[0] <= self._col_ag_max_rows
++                and x.shape[0] * x.shape[1] * self.world
++                <= self._col_ag_max_numel):
++            data, scale = self._col_ag.all_gather_mxfp8(x)
++            return data, scale.view(x.shape[0], -1)
+         gathered = self.all_gather_col(x).contiguous()
+         return torch.ops.trtllm.mxfp8_quantize(gathered, False)
+ 
+     def allreduce_norm(self, x, gamma, eps, residual=None, impl="auto"):
++        """Fused AR+RMSNorm when the map picks the multimem kernel.
++
++        The unfused tail (all_reduce + F.rms_norm + an add) was costing one
++        at::native layer_norm plus elementwise kernels per layer per decode
++        step (traced on GB300: ~1.2 ms/step across 92 layers) while the fork
++        already shipped MultimemARKernel.allreduce_norm unused.
++        """
++        if self.world > 1 and not self._fallback:
++            picked = (self.pick("allreduce_norm", x.shape)
++                      if impl == "auto" else impl)
++            # B300 report (report_graph_allreduce_norm.csv, 2026-08-21):
++            # trt fused wins 6.8-16.2 us through bs=64; from 128 the tuned
++            # AR + separate norm ("seq", the fallback below) wins; multimem
++            # arnorm measured 39-52 us at every size and is NOT wired.
++            if picked == "trt":
++                trt = self._trt_state()
++                if trt:
++                    norm, result = trt.allreduce_norm(x, gamma, eps, residual)
++                    return norm if residual is None else (norm, result)
+         reduced = self.all_reduce(x, impl=impl)
+         result = reduced if residual is None else reduced + residual
+         norm = torch.nn.functional.rms_norm(result, (result.shape[-1],),
+                                             gamma, eps)
+         return norm if residual is None else (norm, result)
+ 
++    def tune_col_ag(self, x: torch.Tensor) -> None:
++        """Tune the column-AG plan for this shape OUTSIDE graph capture."""
++        if self._col_ag is not None and self.world > 1:
++            self._col_ag.tune(x)
++
+     def all_reduce_dedicated(self, x: torch.Tensor) -> torch.Tensor:
+         return nccl_backend.all_reduce(self.group, x)
+ 
+diff --git a/tensorrt_llm/_torch/kimi_k3_optim/communication/kernels/b10_multimem.py b/tensorrt_llm/_torch/kimi_k3_optim/communication/kernels/b10_multimem.py
+index 0ebbaf61ac..eafcc6bda1 100644
+--- a/tensorrt_llm/_torch/kimi_k3_optim/communication/kernels/b10_multimem.py
++++ b/tensorrt_llm/_torch/kimi_k3_optim/communication/kernels/b10_multimem.py
+@@ -390,10 +390,20 @@ def _jit():
+         os.environ.setdefault(
+             "TORCH_EXTENSIONS_DIR",
+             f"/tmp/torchext_r{int(os.environ.get('OMPI_COMM_WORLD_RANK', os.environ.get('RANK', 0)))}")
++        from ...b10_kernels import _arch
++
++        # Arch derived from the device, and the module name carries the tag:
++        # cpp_extension keys its build dir on name + source hash only, so an
++        # unqualified name replays a B200 build on a B300 -- which loads and
++        # then kills the first launch with "no kernel image is available"
++        # (measured on GB300; the sticky error surfaced in kda_mixer.py).
++        suffix = _arch.suffix()
+         _mod = load_inline(
+-            name="b10_multimem_ar", cpp_sources=_CPP, cuda_sources=_CUDA,
++            name=f"b10_multimem_ar_sm{suffix}",
++            cpp_sources=_CPP, cuda_sources=_CUDA,
+             functions=["mm_ar", "mm_ar_lp", "mm_ar_norm"], verbose=False,
+-            extra_cuda_cflags=["-gencode=arch=compute_100a,code=sm_100a"])
++            extra_cuda_cflags=[
++                f"-gencode=arch=compute_{suffix},code=sm_{suffix}"])
+     return _mod
+ 
+ 
+diff --git a/tensorrt_llm/_torch/kimi_k3_optim/communication/kernels/col_quant.py b/tensorrt_llm/_torch/kimi_k3_optim/communication/kernels/col_quant.py
+new file mode 100644
+index 0000000000..747db01f35
+--- /dev/null
++++ b/tensorrt_llm/_torch/kimi_k3_optim/communication/kernels/col_quant.py
+@@ -0,0 +1,588 @@
++"""Column all-gather engines (Lamport one-shot / copy-engine / NCCL)
++with an optional MXFP8-quantized write-out — the transport behind
++``Collectives.all_gather_col_quant``. Moved here from
++kimi_k3_layer/comm.py so the communication package is self-contained;
++the FlashInferAllReduce class that used to live alongside is now in
++``communication.backends.flashinfer_backend``.
++
++One-shot single-kernel collectives over torch symmetric memory.
++
++Small-message (decode) collectives for NVLink-connected single-node TP.
++NCCL launches ring/tree pipelines that cost 10-20 us regardless of
++size; flashinfer's Lamport oneshot AR shows a single SM kernel does the
++same job in ~5 us. This module provides the two collectives flashinfer
++does NOT ship - all-gather and reduce-scatter - built the same way, so
++a shard -> AG (or RS -> shard) pipeline never pays NCCL latency or has
++to fake the AG as a zero-padded allreduce. Full reductions go through
++flashinfer's oneshot AR (``FlashInferAllReduce``): our own AR measured
++6-8x behind it, so only the primitives that BEAT the alternatives are
++kept.
++
++All device code is CUDA (comm_cuda.py, JIT-built): the latency-
++critical piece of a Lamport collective is the volatile sentinel poll,
++which needs 128-bit vectorized loads (``ld.volatile.global.v4.u32`` + 8
++bf16 sentinel checks per instruction). Triton prototypes of these
++kernels existed but compiled the poll to scalar 16-bit loads and were
++deleted in favor of the CUDA build; NCCL (torch.distributed) is the
++correctness reference and the large-message fallback.
++
++Protocol (flashinfer's Lamport scheme):
++
++  * No barrier anywhere: consumers spin on the payload itself. bf16
++    ``-0.0`` (0x8000) is the "not yet written" sentinel; producers
++    canonicalize ``-0.0`` to ``+0.0`` so real payload never matches.
++  * THREE rotating data slots per rank. A call pushes into slot
++    ``n mod 3`` of every rank, re-sentinels slot ``(n-1) mod 3``
++    (consumed by the previous call), then polls its own slot
++    ``n mod 3``. Safety: rank A starts call n only after its call n-1
++    poll saw every rank's n-1 data, so every rank already finished
++    call n-2 - the slot being cleared can no longer be read, and the
++    slot being written was re-sentineled one call ago everywhere.
++  * Round counters (slot selection) are per-CTA device counters bumped
++    inside the kernel, so CUDA-graph capture/replay of any call count
++    stays correct with no host-side state.
++  * ``reduce_scatter_cols`` keeps its own [flag, counter, clear_bytes]
++    metadata (FlashInfer's layout, variable launch grid): an instance
++    used for it must be DEDICATED to it - the rotation state is not
++    shared with all_gather/reduce_scatter. (This used to be crammed
++    into ``rounds[0:3]``, which corrupted per-CTA round counters of
++    grid>=3 instances: CTA 2 rotated to a slot no peer wrote and its
++    poll span forever - the "tune() hang" in the trt-dev image.)
++
++All ranks must issue the same sequence of calls on a given instance.
++World size 1 degrades to plain local ops.
++
++Two implementation families live here:
++
++  * ``OneShotComm`` - single-kernel Lamport collectives (above); the
++    latency winners at decode sizes.
++  * ``CeComm`` - copy-engine (DMA) collectives: cudaMemcpy2DAsync peer
++    copies + ONE tiny arrival-sync kernel. ZERO SMs on the data path,
++    no sentinel clear, so it takes over at large messages and overlaps
++    concurrent compute for free (graph mode; see class docstring).
++"""
++
++from __future__ import annotations
++
++import os
++
++import torch
++import torch.distributed as dist
++import torch.distributed._symmetric_memory as symm_mem
++
++
++class OneShotComm:
++    """Symmetric-memory workspace + one-shot bf16 collectives.
++
++    ``max_bytes`` is the largest gathered/reduced message; ``grid`` is
++    the CTA count of the AG/RS launches (per-CTA round counters, so it
++    is fixed per instance - tune across instances). All methods need
++    16B-aligned rows: ``cols`` and the row stride multiples of 8 bf16
++    elements (CUDA build does 128-bit pushes/polls).
++    """
++
++    def __init__(self, rank: int, world: int, *,
++                 max_bytes: int = 8 << 20, grid: int = 8,
++                 group=None):
++        self.rank = rank
++        self.world = world
++        self.grid = grid
++        if world == 1:
++            return
++        self.data_off = 256
++        self.slot_bytes = (max_bytes + 255) // 256 * 256
++        self.buf = symm_mem.empty(
++            self.data_off + 3 * self.slot_bytes, dtype=torch.uint8,
++            device=torch.device("cuda", torch.cuda.current_device()),
++        )
++        group = group if group is not None else dist.group.WORLD
++        self.hdl = symm_mem.rendezvous(self.buf, group.group_name)
++        self.buf[:self.data_off].zero_()
++        # whole data region starts sentineled (bf16 -0.0)
++        self.buf[self.data_off:].view(torch.int16).fill_(-32768)
++        self.buf_ptrs = torch.tensor(
++            self.hdl.buffer_ptrs, dtype=torch.int64, device="cuda")
++        # per-CTA round counters (slot rotation for AG/RS)
++        self.rounds = torch.zeros(grid, dtype=torch.int32, device="cuda")
++        # per-CTA x per-slot record of vectors written (so the
++        # re-sentinel pass clears the previous MESSAGE, not the whole
++        # slot capacity); slots start sentineled -> nothing to clear
++        self.clear_hist = torch.zeros(grid, 3, dtype=torch.int32,
++                                      device="cuda")
++        # rs_cols FI-style metadata [flag, counter, clear_bytes]
++        self.meta = torch.zeros(3, dtype=torch.int32, device="cuda")
++        self.meta[2] = self.slot_bytes
++        torch.cuda.synchronize()
++        dist.barrier()
++
++    def all_gather(self, x: torch.Tensor, *,
++                   block: int = 256) -> torch.Tensor:
++        """Gather [rows, cols] shards along COLUMNS -> a regular
++        [rows, world*cols] tensor (the feature-dim gather NCCL AG would
++        need a transpose for; rows=1 recovers the flat dim0 concat).
++        ``x`` may be row-strided."""
++        rows, cols = x.shape
++        if self.world == 1:
++            return x
++        assert rows * cols * self.world * 2 <= self.slot_bytes
++        from .col_quant_cuda import get_module
++
++        return get_module().ag_lamport(
++            self.buf_ptrs, self.rounds, self.clear_hist, x,
++            self.data_off, self.slot_bytes, self.rank, self.world,
++            block,
++        )
++
++    def all_gather_mxfp8(self, x: torch.Tensor, *,
++                         block: int = 256) -> tuple[torch.Tensor,
++                                                    torch.Tensor]:
++        """Column AG with the MXFP8 activation quantize fused on the
++        write-out: [rows, cols] bf16 shards -> ([rows, world*cols]
++        e4m3, [rows, world*cols/32] ue8m0 scales), bit-exact with
++        ``torch.ops.trtllm.mxfp8_quantize(ag(x), False)``. Transport
++        is unchanged bf16 - the fusion kills the separate quantize
++        kernel that would otherwise sit on the critical path."""
++        rows, cols = x.shape
++        assert self.world > 1, "no transport at TP1; quantize locally"
++        assert rows * cols * self.world * 2 <= self.slot_bytes
++        from .col_quant_cuda import get_module
++
++        return get_module().ag_mxfp8(
++            self.buf_ptrs, self.rounds, self.clear_hist, x,
++            self.data_off, self.slot_bytes, self.rank, self.world,
++            block,
++        )
++
++    def reduce_scatter(self, x: torch.Tensor, *,
++                       block: int = 256) -> torch.Tensor:
++        """Sum over ranks, return my flat dim0 1/world chunk. The
++        sentinel poll IS the synchronization: each rank polls the WORLD
++        rows of its chunk and accumulates fp32 as they land."""
++        x = x.reshape(-1)
++        if self.world == 1:
++            return x
++        assert x.numel() * 2 <= self.slot_bytes
++        from .col_quant_cuda import get_module
++
++        return get_module().rs_lamport(
++            self.buf_ptrs, self.rounds, self.clear_hist, x,
++            self.data_off, self.slot_bytes, self.rank, self.world,
++            block,
++        )
++
++    def reduce_scatter_cols(self, x: torch.Tensor) -> torch.Tensor:
++        """Column reduce-scatter: [B, C] partial sums on every rank ->
++        my [B, C/world] column slice of the total (world x less wire
++        than an AR). Forked from FlashInfer's oneshot Lamport AR (same
++        push/clear/batched-poll structure, one CTA per token).
++        REQUIRES a dedicated instance (own rotation metadata).
++
++        (Fused-RMSNorm / deferred-scale / fused-finalize variants were
++        REMOVED - all lost to the flashinfer fused AR+norm tail; see
++        moe_optimization.md Appendix A.)"""
++        rows, cols = x.shape
++        if self.world == 1:
++            raise ValueError("col-RS is a no-op at TP1; slice locally")
++        assert rows * cols * 2 <= self.slot_bytes, "instance too small"
++        from .col_quant_cuda import get_module
++
++        return get_module().rs_cols(
++            self.buf_ptrs, self.meta, x,
++            self.data_off, self.slot_bytes, self.rank, self.world,
++        )
++
++
++class CeComm:
++    """Copy-engine (DMA) collectives over symmetric memory.
++
++    The data movement is host-issued ``cudaMemcpy2DAsync`` peer copies
++    (push orientation: every rank only SENDS): the DMA engines move the
++    bytes, ZERO SMs, so the transfer overlaps concurrent compute by
++    construction and there is no Lamport re-sentinel cost (which is
++    what makes the one-shot kernels lose past ~1k tokens).
++
++    SM cost per collective: ONE tiny sync kernel AFTER the copies
++    (publish "my pushes are done" - stream order makes that true -
++    then wait for every peer's publication). There is no pre-copy
++    barrier: my round r+1 copies are stream-ordered after my round-r
++    consumer, and all ranks run the same pipeline, so nobody can push
++    round r+1 into my slot before my consumer read round r. This
++    REQUIRES (a) consumers of the returned view to run on the caller's
++    current stream before the next call on the instance, and (b) all
++    ranks issuing the same sequence of calls with comparable work in
++    between (true for graph-replayed TP pipelines).
++
++    Copies serialize on one P2P engine (~530 GB/s; measured: extra
++    streams do NOT parallelize them, so ``streams`` is tuning-only),
++    and each copy has ~2 us of engine setup - at tiny messages the
++    single-kernel Lamport path is faster. Use CUDA graphs: eager-mode
++    ``cudaMemcpy2DAsync`` host calls cost ~10 us each with peer
++    pointers; as graph memcpy nodes they are free.
++
++    No alignment requirements (memcpy is byte-granular).
++    """
++
++    def __init__(self, rank: int, world: int, *,
++                 max_bytes: int = 8 << 20, streams: int = 0,
++                 sync_threads: int = 32, group=None):
++        self.rank = rank
++        self.world = world
++        self.nstreams = streams
++        self.sync_threads = sync_threads
++        if world == 1:
++            return
++        self.data_off = 256
++        self.slot_bytes = (max_bytes + 255) // 256 * 256
++        self.buf = symm_mem.empty(
++            self.data_off + self.slot_bytes, dtype=torch.uint8,
++            device=torch.device("cuda", torch.cuda.current_device()),
++        )
++        group = group if group is not None else dist.group.WORLD
++        self.hdl = symm_mem.rendezvous(self.buf, group.group_name)
++        self.buf[:self.data_off].zero_()  # arrival flags start at 0
++        self.ptrs = [int(p) for p in self.hdl.buffer_ptrs]
++        self.buf_ptrs = torch.tensor(
++            self.hdl.buffer_ptrs, dtype=torch.int64, device="cuda")
++        # host-side pointer table + C++ whole-collective fast path
++        # (B10_CE_CPP=0 falls back to the Python reference loops)
++        self._ptrs_cpu = torch.tensor(self.ptrs, dtype=torch.int64)
++        self._cpp = os.environ.get("B10_CE_CPP", "1") == "1"
++        # monotonic round (device-side -> graph replay safe); starts at
++        # 1 so the first wait cannot pass on the zeroed flags
++        self.round_buf = torch.ones(1, dtype=torch.int32, device="cuda")
++        self.streams = [torch.cuda.Stream(priority=-1)
++                        for _ in range(streams)]
++        self._fork = torch.cuda.Event()
++        self._joins = [torch.cuda.Event() for _ in self.streams]
++        torch.cuda.synchronize()
++        dist.barrier()
++
++    def _sync(self):
++        from .col_quant_cuda import get_module
++
++        get_module().ce_sync(
++            self.buf_ptrs, self.round_buf, 0, self.rank, self.world,
++            self.sync_threads)
++
++    def _copies(self, jobs):
++        """Issue (dst, dpitch, src, spitch, width, height) copies,
++        fanned out over the side streams when configured. Copies whose
++        destination is THIS rank's buffer go through a small SM copy
++        kernel: a same-device cudaMemcpy2DAsync runs on the driver's SM
++        copy path and does not co-schedule with a saturating kernel
++        (it queues until concurrent compute drains, stalling the
++        arrival sync), while a regular kernel slots in as blocks
++        retire. Peer copies stay on the DMA engines (zero SMs)."""
++        from .col_quant_cuda import get_module
++
++        mod = get_module()
++        lo = self.ptrs[self.rank]
++        hi = lo + self.data_off + self.slot_bytes
++
++        def issue(j):
++            (mod.ce_local2d if lo <= j[0] < hi else mod.ce_copy2d)(*j)
++
++        if not self.streams:
++            # one pybind crossing for the whole copy set (eager host
++            # cost of the per-peer loop is ~4us/call; see comm_cuda)
++            mod.ce_copy2d_batch(
++                torch.tensor([v for j in jobs for v in j],
++                             dtype=torch.int64), lo, hi)
++            return
++        cur = torch.cuda.current_stream()
++        self._fork.record(cur)
++        for s in self.streams:
++            s.wait_event(self._fork)
++        lanes = [cur] + self.streams
++        for i, j in enumerate(jobs):
++            with torch.cuda.stream(lanes[i % len(lanes)]):
++                issue(j)
++        for s, evt in zip(self.streams, self._joins):
++            evt.record(s)
++            cur.wait_event(evt)
++
++    def _slot_view(self, nbytes: int) -> torch.Tensor:
++        return self.buf[self.data_off:self.data_off + nbytes].view(
++            torch.bfloat16)
++
++    def all_gather(self, x: torch.Tensor) -> torch.Tensor:
++        """Column AG: [rows, cols] shards -> [rows, world*cols]. The
++        result is a VIEW of this instance's slot (stable address across
++        graph replays); it is valid until the next call on the
++        instance. ``x`` may be row-strided."""
++        rows, cols = x.shape
++        if self.world == 1:
++            return x
++        out_bytes = rows * self.world * cols * 2
++        assert out_bytes <= self.slot_bytes, "instance too small"
++        assert x.stride(1) == 1
++        if self._cpp and not self.streams:
++            from .col_quant_cuda import get_module
++            return get_module().ce_ag_cols(
++                self._ptrs_cpu, self.buf_ptrs, self.round_buf, x,
++                self.data_off, self.slot_bytes, self.rank, self.world,
++                self.sync_threads)
++        row_bytes = cols * 2
++        dpitch = self.world * row_bytes
++        jobs = []
++        for i in range(self.world):
++            r = (self.rank + 1 + i) % self.world  # self last
++            jobs.append((
++                self.ptrs[r] + self.data_off + self.rank * row_bytes,
++                dpitch, x.data_ptr(), x.stride(0) * 2, row_bytes, rows,
++            ))
++        self._copies(jobs)
++        self._sync()
++        return self._slot_view(out_bytes).view(rows, self.world * cols)
++
++    def reduce_scatter_cols(self, x: torch.Tensor) -> torch.Tensor:
++        """Column RS: [rows, world*C] partial sums on every rank -> my
++        [rows, C] column slice of the total. Copies push column block r
++        to rank r as a contiguous slab; the only SM work is the final
++        slab sum (fp32 accumulation). No fused norm (use the Lamport
++        ``reduce_scatter_cols`` when the norm must be fused)."""
++        rows, cols = x.shape
++        if self.world == 1:
++            raise ValueError("col-RS is a no-op at TP1; slice locally")
++        assert cols % self.world == 0 and x.stride(1) == 1
++        chunk = cols // self.world
++        slab_bytes = rows * chunk * 2
++        assert self.world * slab_bytes <= self.slot_bytes
++        jobs = []
++        for i in range(self.world):
++            r = (self.rank + 1 + i) % self.world
++            jobs.append((
++                self.ptrs[r] + self.data_off + self.rank * slab_bytes,
++                chunk * 2, x.data_ptr() + r * chunk * 2,
++                x.stride(0) * 2, chunk * 2, rows,
++            ))
++        self._copies(jobs)
++        self._sync()
++        slabs = self._slot_view(self.world * slab_bytes).view(
++            self.world, rows, chunk)
++        return slabs.sum(0)  # opmath fp32 accumulation, bf16 out
++
++    # -- row (token/sequence-parallel) collectives ---------------------
++    # Row slabs of a contiguous [B, W] tensor are contiguous, so each
++    # peer push is ONE flat copy - even cheaper than the cols variants
++    # (no pitch interleave). Requires B % world == 0 (pad tokens at the
++    # layer entry).
++
++    def push_rows(self, x: torch.Tensor):
++        """All-to-all half of a row RS: push row-block r of the [B, W]
++        partial to rank r's slot at offset rank*slab. Split from the
++        reduce so the copies can be issued early (e.g. on a side
++        stream, overlapping compute) and reduced later. Every rank must
++        call ``reduce_rows`` (which syncs) before reusing the slot."""
++        rows, cols = x.shape
++        assert rows % self.world == 0 and x.stride(1) == 1
++        chunk = rows // self.world
++        slab_bytes = chunk * cols * 2
++        assert self.world * slab_bytes <= self.slot_bytes
++        if self._cpp and not self.streams:
++            from .col_quant_cuda import get_module
++            get_module().ce_push_rows(
++                self._ptrs_cpu, x, self.data_off, self.slot_bytes,
++                self.rank, self.world)
++            return chunk, cols, slab_bytes
++        jobs = []
++        for i in range(self.world):
++            r = (self.rank + 1 + i) % self.world
++            jobs.append((
++                self.ptrs[r] + self.data_off + self.rank * slab_bytes,
++                slab_bytes, x.data_ptr() + r * slab_bytes,
++                slab_bytes, slab_bytes, 1,
++            ))
++        self._copies(jobs)
++        return chunk, cols, slab_bytes
++
++    def reduce_rows(self, chunk: int, cols: int,
++                    slab_bytes: int) -> torch.Tensor:
++        """Sync + local fp32-accumulated sum of the world slabs pushed
++        by ``push_rows``: my reduced [B/world, W] row slice."""
++        if self._cpp and not self.streams:
++            from .col_quant_cuda import get_module
++            return get_module().ce_reduce_rows(
++                self._ptrs_cpu, self.buf_ptrs, self.round_buf,
++                self.data_off, self.rank, self.world, self.sync_threads,
++                chunk, cols)
++        self._sync()
++        slabs = self._slot_view(self.world * slab_bytes).view(
++            self.world, chunk, cols)
++        return slabs.sum(0)
++
++    def reduce_scatter_rows(self, x: torch.Tensor) -> torch.Tensor:
++        """Row RS: [B, W] partial sums on every rank -> my reduced
++        [B/world, W] row slice."""
++        if self.world == 1:
++            return x
++        return self.reduce_rows(*self.push_rows(x))
++
++    def all_to_all_rows(self, x: torch.Tensor) -> torch.Tensor:
++        """Row A2A: chunk d of my [B, W] goes to rank d -> my received
++        [B, W] (source-major). push_rows already IS the A2A data movement
++        (slab d of x lands in rank d's slot at position [my rank]); this
++        just adds the sync and views the received slabs. The result is a
++        view of this instance's slot, valid until the next call."""
++        if self.world == 1:
++            return x
++        chunk, cols, _slab = self.push_rows(x)
++        self._sync()
++        return self._slot_view(x.shape[0] * cols * 2).view(x.shape[0], cols)
++
++    def all_gather_rows(self, x: torch.Tensor) -> torch.Tensor:
++        """Row AG: my [B/world, W] row slice -> full [B, W]. The result
++        is a view of this instance's slot, valid until the next call on
++        the instance."""
++        if self.world == 1:
++            return x
++        rows, cols = x.shape
++        slab_bytes = rows * cols * 2
++        out_bytes = self.world * slab_bytes
++        assert out_bytes <= self.slot_bytes
++        assert x.stride(1) == 1
++        if self._cpp and not self.streams:
++            from .col_quant_cuda import get_module
++            return get_module().ce_ag_rows(
++                self._ptrs_cpu, self.buf_ptrs, self.round_buf, x,
++                self.data_off, self.slot_bytes, self.rank, self.world,
++                self.sync_threads)
++        jobs = []
++        for i in range(self.world):
++            r = (self.rank + 1 + i) % self.world  # self last
++            jobs.append((
++                self.ptrs[r] + self.data_off + self.rank * slab_bytes,
++                slab_bytes, x.data_ptr(), slab_bytes, slab_bytes, 1,
++            ))
++        self._copies(jobs)
++        self._sync()
++        return self._slot_view(out_bytes).view(
++            self.world * rows, cols)
++
++
++def nccl_all_gather_cols(x: torch.Tensor) -> torch.Tensor:
++    """NCCL reference for the column AG (correctness baseline and
++    large-message fallback): dim0 gather + transpose-copy."""
++    world = dist.get_world_size()
++    rows, cols = x.shape
++    out = torch.empty(world, rows, cols, dtype=x.dtype, device=x.device)
++    dist.all_gather_into_tensor(out.view(world * rows, cols),
++                                x.contiguous())
++    return out.permute(1, 0, 2).reshape(rows, world * cols)
++
++
++class TunedAllGather:
++    """Size-keyed autotune over one-shot instances (grid sizes x launch
++    blocks) plus the NCCL fallback. Tune once per shape OUTSIDE graph
++    capture; replays then always dispatch the winning launch."""
++
++    def __init__(self, comms: list[OneShotComm],
++                 ces: list[CeComm] | None = None):
++        self.comms = comms
++        self.ces = ces or []
++        self.world = comms[0].world
++        self._plans: dict[tuple, tuple] = {}
++
++    def _candidates(self, numel_out: int):
++        for ci, comm in enumerate(self.comms):
++            if numel_out > comm.slot_bytes // 2:
++                continue
++            for blk in (128, 256, 512):
++                yield ("oneshot", ci, blk)
++        for ci, ce in enumerate(self.ces):
++            if numel_out * 2 <= ce.slot_bytes:
++                yield ("ce", ci, 0)
++        yield ("nccl", 0, 0)
++
++    def _run(self, plan, x):
++        kind, ci, blk = plan
++        if kind == "nccl":
++            return nccl_all_gather_cols(x)
++        if kind == "ce":
++            return self.ces[ci].all_gather(x)
++        return self.comms[ci].all_gather(x, block=blk)
++
++    def all_gather_mxfp8(self, x: torch.Tensor) -> tuple[torch.Tensor,
++                                                         torch.Tensor]:
++        """AG with the MXFP8 quantize fused on the write-out (decode
++        path); tuned across one-shot instances like plain AG (the
++        instance GRID matters: at [64, 3584] grid 32 runs the fused AG
++        in 7.6 us where grid 8 took 12.5 - the poll+quantize pass is
++        grid-starved on a small instance)."""
++        key = ("q",) + tuple(x.shape)
++        plan = self._plans.get(key)
++        if plan is None:
++            plans = [("oneshot", ci, blk)
++                     for ci in range(len(self.comms))
++                     for blk in (256, 512)]
++            plan = self._tune_plans(key, plans, lambda p: self._run_q(p, x))
++        return self._run_q(plan, x)
++
++    def _run_q(self, plan, x):
++        _, ci, blk = plan
++        return self.comms[ci].all_gather_mxfp8(x, block=blk)
++
++    def tune(self, x: torch.Tensor, *, iters: int = 30) -> tuple:
++        key = tuple(x.shape)
++        if key in self._plans or self.world == 1:
++            return self._plans.get(key, ("local", 0, 0))
++        numel_out = x.numel() * self.world
++        return self._tune_plans(
++            key, list(self._candidates(numel_out)),
++            lambda p: self._run(p, x), iters=iters)
++
++    def _tune_plans(self, key, plans, run, *, iters: int = 30) -> tuple:
++        best, best_t = None, float("inf")
++        for plan in plans:
++            for _ in range(3):
++                run(plan)
++            torch.cuda.synchronize()
++            dist.barrier()
++            start = torch.cuda.Event(enable_timing=True)
++            end = torch.cuda.Event(enable_timing=True)
++            start.record()
++            for _ in range(iters):
++                run(plan)
++            end.record()
++            end.synchronize()
++            t = start.elapsed_time(end) / iters
++            t_all = torch.tensor([t], device="cuda", dtype=torch.float64)
++            dist.all_reduce(t_all, op=dist.ReduceOp.MAX)
++            t = t_all.item()
++            if t < best_t:
++                best, best_t = plan, t
++        self._plans[key] = best
++        return best
++
++    def __call__(self, x: torch.Tensor) -> torch.Tensor:
++        if self.world == 1:
++            return x
++        plan = self._plans.get(tuple(x.shape))
++        if plan is None:
++            plan = self.tune(x)
++        return self._run(plan, x)
++
++
++def build_tuned_all_gather(
++    rank: int,
++    world: int,
++    max_rows: int,
++    max_output_columns: int,
++) -> TunedAllGather:
++    """Build launch variants for a bounded column all-gather."""
++    max_bytes = max_rows * max_output_columns * 2
++    comms = [OneShotComm(rank, world, max_bytes=max_bytes, grid=8)]
++    if max_rows >= 8:
++        # bigger grid for the poll/copy(/quantize) drain: at [64, 3584]
++        # grid 32 beats grid 8 by ~7 us (plain) / ~5 us (fused mxfp8)
++        comms.append(
++            OneShotComm(rank, world, max_bytes=max_bytes, grid=32)
++        )
++    if max_rows >= 32:
++        comms.append(
++            OneShotComm(rank, world, max_bytes=max_bytes, grid=64)
++        )
++    # copy-engine candidate (SM-free; wins past the Lamport clear-cost
++    # crossover and whenever the caller wants compute overlap)
++    ces = [CeComm(rank, world, max_bytes=max_bytes)]
++    return TunedAllGather(comms, ces)
+diff --git a/tensorrt_llm/_torch/kimi_k3_optim/communication/kernels/col_quant_cuda.py b/tensorrt_llm/_torch/kimi_k3_optim/communication/kernels/col_quant_cuda.py
+new file mode 100644
+index 0000000000..061504c339
+--- /dev/null
++++ b/tensorrt_llm/_torch/kimi_k3_optim/communication/kernels/col_quant_cuda.py
+@@ -0,0 +1,1013 @@
++"""CUDA kernels for the Lamport collectives (see comm.py for protocol).
++
++Everything latency-critical is hand-written CUDA:
++
++  * VECTORIZED volatile poll: ``ld.volatile.global.v4.u32`` + one
++    ``__vcmpeq2`` per word - 8 bf16 sentinel checks per instruction.
++    (A Triton prototype compiled the poll to scalar 16-bit loads and
++    was deleted; this is why the comm kernels are CUDA-only.)
++  * BATCHED sentinel checks: the reduce polls issue the loads of all
++    ``world`` peer rows before testing any of them, so waits overlap
++    instead of chaining up to ``world`` NVLink latencies.
++  * PDL (programmatic dependent launch, sm90+): kernels sync at entry
++    and trigger at exit and are launched with the programmatic-stream-
++    serialization attribute, hiding ~1-2 us of launch latency - the
++    same trick flashinfer's oneshot AR uses (launch_with_pdl).
++
++The sentinel poll IS the synchronization (no barrier anywhere): a call
++pushes before it polls, so seeing any of a peer's round-n data implies
++that peer finished round n-1 entirely; 3-slot rotation makes the
++clear/write/read of consecutive calls race-free (see comm.py).
++
++Requirements: 16B-aligned base pointers, cols and row stride multiples
++of 8 bf16 (the fc1 AG slice and all bench_comm shapes satisfy this).
++"""
++
++from __future__ import annotations
++
++import os
++
++import torch
++
++_CUDA_SRC = r"""
++#include <torch/extension.h>
++#include <ATen/cuda/CUDAContext.h>
++#include <c10/cuda/CUDAException.h>
++#include <cuda_fp8.h>
++#include <cstdint>
++
++#define SENT2 0x80008000u  // two bf16 -0.0 sentinels per word
++
++// Programmatic dependent launch (sm90+): the next kernel's launch
++// setup overlaps this kernel's tail. Sync FIRST (before reading any
++// regular-memory input or metadata produced by the previous kernel);
++// trigger LAST (release semantics - all this CTA's stores are visible
++// to whoever passed the corresponding sync). flashinfer launches its
++// oneshot AR exactly this way (launch_with_pdl=True); without it our
++// small-message collectives pay ~1-2 us of exposed launch latency the
++// AR does not.
++#if defined(__CUDA_ARCH__) && __CUDA_ARCH__ >= 900
++#define GRID_DEP_SYNC() cudaGridDependencySynchronize()
++#define TRIGGER_PDL() cudaTriggerProgrammaticLaunchCompletion()
++#else
++#define GRID_DEP_SYNC()
++#define TRIGGER_PDL()
++#endif
++
++__device__ __forceinline__ uint4 ld_volatile_v4(const uint4 *p) {
++    uint4 v;
++    asm volatile("ld.volatile.global.v4.u32 {%0,%1,%2,%3}, [%4];"
++                 : "=r"(v.x), "=r"(v.y), "=r"(v.z), "=r"(v.w)
++                 : "l"(p));
++    return v;
++}
++
++__device__ __forceinline__ void st_volatile_v4(uint4 *p, uint4 v) {
++    asm volatile("st.volatile.global.v4.u32 [%0], {%1,%2,%3,%4};"
++                 :: "l"(p), "r"(v.x), "r"(v.y), "r"(v.z), "r"(v.w));
++}
++
++// zero out any 16-bit lane equal to the sentinel (-0.0 -> +0.0)
++__device__ __forceinline__ uint32_t canon(uint32_t w) {
++    return w & ~__vcmpeq2(w, SENT2);
++}
++
++__device__ __forceinline__ bool has_sentinel(uint4 v) {
++    return (__vcmpeq2(v.x, SENT2) | __vcmpeq2(v.y, SENT2) |
++            __vcmpeq2(v.z, SENT2) | __vcmpeq2(v.w, SENT2)) != 0u;
++}
++
++// WORLD is a compile-time template parameter (dispatched on the host):
++// with a runtime bound the per-rank push/poll loops cannot unroll, so
++// the "batched" sentinel loads compile to a serial loop and the kernel
++// trails TRT-LLM's (templated) oneshot AR by ~1-2 us at small sizes.
++// clear_hist[cta][slot] remembers how many vectors round n wrote into
++// slot n%3, so the re-sentinel pass (step 2) clears exactly what the
++// previous call wrote instead of the whole slot. Clearing slot_bytes
++// every call made the AG scale with the INSTANCE capacity, not the
++// message: at [64, 10752] the full-slot clear alone was ~1.3 MB of
++// stores and the AG lost to the flashinfer one-shot AR it should beat
++// by 8x on wire bytes. (rs_cols already had this via meta[2].)
++template <int WORLD>
++__global__ void ag_lamport_kernel(
++    const int64_t *__restrict__ buf_ptrs, int *__restrict__ rounds,
++    int *__restrict__ clear_hist,
++    const uint4 *__restrict__ x, uint4 *__restrict__ out,
++    int rows, int cols_v, int64_t x_stride_v,
++    int64_t data_off, int64_t slot_bytes,
++    int rank)
++{
++    GRID_DEP_SYNC();
++    const int out_cols_v = WORLD * cols_v;
++    const int64_t write_v = (int64_t)rows * out_cols_v;
++    __shared__ int s_base, s_clear;
++    if (threadIdx.x == 0) {
++        s_base = atomicAdd(rounds + blockIdx.x, 1);
++        int *h = clear_hist + blockIdx.x * 3;
++        s_clear = h[(s_base + 2) % 3];
++        h[s_base % 3] = (int)write_v;
++    }
++    __syncthreads();
++    const int base = s_base;
++    const int64_t clear_v = s_clear;
++    const int64_t off = data_off + (int64_t)(base % 3) * slot_bytes;
++    const int64_t off_c = data_off + (int64_t)((base + 2) % 3) * slot_bytes;
++
++    const int tid = blockIdx.x * blockDim.x + threadIdx.x;
++    const int nthr = gridDim.x * blockDim.x;
++    const int64_t numel_v = (int64_t)rows * cols_v;
++
++    // 1) push my shard into every peer's slot (canonicalized)
++    for (int64_t i = tid; i < numel_v; i += nthr) {
++        const int row = i / cols_v;
++        const int col = i - (int64_t)row * cols_v;
++        uint4 v = x[row * x_stride_v + col];
++        v.x = canon(v.x); v.y = canon(v.y);
++        v.z = canon(v.z); v.w = canon(v.w);
++        const int64_t dst = (int64_t)row * out_cols_v
++                            + (int64_t)rank * cols_v + col;
++        #pragma unroll
++        for (int r = 0; r < WORLD; ++r) {
++            uint4 *peer = reinterpret_cast<uint4 *>(
++                (char *)buf_ptrs[r] + off);
++            st_volatile_v4(peer + dst, v);
++        }
++    }
++
++    // 2) re-sentinel the slot consumed last call (local writes only)
++    uint4 *mine_c = reinterpret_cast<uint4 *>(
++        (char *)buf_ptrs[rank] + off_c);
++    const uint4 sent = {SENT2, SENT2, SENT2, SENT2};
++    for (int64_t i = tid; i < clear_v; i += nthr)
++        st_volatile_v4(mine_c + i, sent);
++
++    // 3) vectorized poll + copy to the regular out tensor
++    uint4 *mine = reinterpret_cast<uint4 *>((char *)buf_ptrs[rank] + off);
++    const int64_t total_v = (int64_t)rows * out_cols_v;
++    for (int64_t i = tid; i < total_v; i += nthr) {
++        uint4 v;
++        do { v = ld_volatile_v4(mine + i); } while (has_sentinel(v));
++        out[i] = v;
++    }
++    TRIGGER_PDL();
++}
++
++// ------------------------------------------------------------------
++// All-gather with the MXFP8 activation quantize FUSED on the write-out
++// (out = e4m3 bytes + ue8m0 per-32 block scales instead of bf16). The
++// transport is UNCHANGED (bf16 on wire - decode messages are latency-
++// bound, and bf16 keeps the sentinel protocol intact); only step 3
++// changes: one thread owns one 32-element scale block (4 vectors),
++// polls its 4 vectors batched, then quantizes. The recipe is a
++// bit-exact replica of TRT-LLM's cvt_warp_fp16_to_mxfp8
++// (quantization.cuh): sf = e8m0(amax * rcp.approx(448)) rounded UP,
++// out = e4m3(x * rcp.approx(2^sf)) satfinite, scale 0 when amax == 0.
++// ------------------------------------------------------------------
++
++__device__ __forceinline__ float rcp_ftz(float a) {
++    float b;
++    asm volatile("rcp.approx.ftz.f32 %0, %1;" : "=f"(b) : "f"(a));
++    return b;
++}
++
++__device__ __forceinline__ uint64_t e4m3x8(const float2 (&f)[4]) {
++    union { uint64_t u; __nv_fp8x2_e4m3 e[4]; } o;
++    #pragma unroll
++    for (int k = 0; k < 4; ++k) o.e[k] = __nv_fp8x2_e4m3(f[k]);
++    return o.u;
++}
++
++template <int WORLD>
++__global__ void ag_mxfp8_lamport_kernel(
++    const int64_t *__restrict__ buf_ptrs, int *__restrict__ rounds,
++    int *__restrict__ clear_hist,
++    const uint4 *__restrict__ x, uint64_t *__restrict__ out,
++    uint8_t *__restrict__ sf,
++    int rows, int cols_v, int64_t x_stride_v,
++    int64_t data_off, int64_t slot_bytes,
++    int rank)
++{
++    GRID_DEP_SYNC();
++    const int out_cols_v = WORLD * cols_v;
++    const int64_t write_v = (int64_t)rows * out_cols_v;
++    __shared__ int s_base, s_clear;
++    if (threadIdx.x == 0) {
++        s_base = atomicAdd(rounds + blockIdx.x, 1);
++        int *h = clear_hist + blockIdx.x * 3;
++        s_clear = h[(s_base + 2) % 3];
++        h[s_base % 3] = (int)write_v;
++    }
++    __syncthreads();
++    const int base = s_base;
++    const int64_t clear_v = s_clear;
++    const int64_t off = data_off + (int64_t)(base % 3) * slot_bytes;
++    const int64_t off_c = data_off + (int64_t)((base + 2) % 3) * slot_bytes;
++
++    const int tid = blockIdx.x * blockDim.x + threadIdx.x;
++    const int nthr = gridDim.x * blockDim.x;
++    const int64_t numel_v = (int64_t)rows * cols_v;
++
++    // 1) push my shard into every peer's slot (identical to ag_lamport)
++    for (int64_t i = tid; i < numel_v; i += nthr) {
++        const int row = i / cols_v;
++        const int col = i - (int64_t)row * cols_v;
++        uint4 v = x[row * x_stride_v + col];
++        v.x = canon(v.x); v.y = canon(v.y);
++        v.z = canon(v.z); v.w = canon(v.w);
++        const int64_t dst = (int64_t)row * out_cols_v
++                            + (int64_t)rank * cols_v + col;
++        #pragma unroll
++        for (int r = 0; r < WORLD; ++r) {
++            uint4 *peer = reinterpret_cast<uint4 *>(
++                (char *)buf_ptrs[r] + off);
++            st_volatile_v4(peer + dst, v);
++        }
++    }
++
++    // 2) re-sentinel the slot consumed last call
++    uint4 *mine_c = reinterpret_cast<uint4 *>(
++        (char *)buf_ptrs[rank] + off_c);
++    const uint4 sent = {SENT2, SENT2, SENT2, SENT2};
++    for (int64_t i = tid; i < clear_v; i += nthr)
++        st_volatile_v4(mine_c + i, sent);
++
++    // 3) poll one 32-element block per thread (4 vectors, batched
++    //    sentinel check), then quantize to e4m3 + one ue8m0 scale
++    uint4 *mine = reinterpret_cast<uint4 *>((char *)buf_ptrs[rank] + off);
++    const int64_t nblk = (int64_t)rows * (out_cols_v / 4);
++    for (int64_t b = tid; b < nblk; b += nthr) {
++        const int64_t v0 = b * 4;
++        uint4 v[4];
++        bool done = false;
++        while (!done) {
++            done = true;
++            #pragma unroll
++            for (int j = 0; j < 4; ++j) {
++                v[j] = ld_volatile_v4(mine + v0 + j);
++                done &= !has_sentinel(v[j]);
++            }
++        }
++        float2 f[16];
++        float vmax = 0.f;
++        #pragma unroll
++        for (int j = 0; j < 4; ++j) {
++            const uint32_t *w = &v[j].x;
++            #pragma unroll
++            for (int k = 0; k < 4; ++k) {
++                f[j * 4 + k] = __bfloat1622float2(
++                    *reinterpret_cast<const __nv_bfloat162 *>(&w[k]));
++                vmax = fmaxf(vmax, fmaxf(fabsf(f[j * 4 + k].x),
++                                         fabsf(f[j * 4 + k].y)));
++            }
++        }
++        __nv_fp8_e8m0 t;
++        t.__x = __nv_cvt_float_to_e8m0(
++            vmax * rcp_ftz(448.0f), __NV_SATFINITE, cudaRoundPosInf);
++        sf[b] = t.__x;
++        const float scale =
++            (vmax != 0.f) ? rcp_ftz(static_cast<float>(t)) : 0.0f;
++        #pragma unroll
++        for (int j = 0; j < 4; ++j) {
++            float2 q[4];
++            #pragma unroll
++            for (int k = 0; k < 4; ++k) {
++                q[k].x = f[j * 4 + k].x * scale;
++                q[k].y = f[j * 4 + k].y * scale;
++            }
++            out[v0 + j] = e4m3x8(q);
++        }
++    }
++    TRIGGER_PDL();
++}
++
++__device__ __forceinline__ void acc_u4(float2 acc[4], uint4 v) {
++    const uint32_t w[4] = {v.x, v.y, v.z, v.w};
++    #pragma unroll
++    for (int j = 0; j < 4; ++j) {
++        const __nv_bfloat162 b =
++            *reinterpret_cast<const __nv_bfloat162 *>(&w[j]);
++        const float2 f = __bfloat1622float2(b);
++        acc[j].x += f.x;
++        acc[j].y += f.y;
++    }
++}
++
++// Reduce-scatter (out = my chunk of the rank-sum). Sentinel poll IS
++// the synchronization; no barrier anywhere.
++template <int WORLD>
++__global__ void rs_lamport_kernel(
++    const int64_t *__restrict__ buf_ptrs, int *__restrict__ rounds,
++    int *__restrict__ clear_hist,
++    const uint4 *__restrict__ x, uint4 *__restrict__ out,
++    int64_t chunk_v,
++    int64_t data_off, int64_t slot_bytes,
++    int rank)
++{
++    GRID_DEP_SYNC();
++    const int64_t write_v = (int64_t)WORLD * chunk_v;
++    __shared__ int s_base, s_clear;
++    if (threadIdx.x == 0) {
++        s_base = atomicAdd(rounds + blockIdx.x, 1);
++        int *h = clear_hist + blockIdx.x * 3;
++        s_clear = h[(s_base + 2) % 3];
++        h[s_base % 3] = (int)write_v;
++    }
++    __syncthreads();
++    const int base = s_base;
++    const int64_t clear_v = s_clear;
++    const int64_t off = data_off + (int64_t)(base % 3) * slot_bytes;
++    const int64_t off_c = data_off + (int64_t)((base + 2) % 3) * slot_bytes;
++
++    const int tid = blockIdx.x * blockDim.x + threadIdx.x;
++    const int nthr = gridDim.x * blockDim.x;
++
++    // 1) push: my contribution to each peer's slot at row `rank`
++    //    (peer r gets my chunk r). Self IS included: skipping it
++    //    (reading own chunk from x in step 3) was measured SLOWER -
++    //    the r==rank branch in these unrolled loops costs more than
++    //    the local slot round-trip it saves.
++    for (int64_t i = tid; i < chunk_v; i += nthr) {
++        #pragma unroll
++        for (int r = 0; r < WORLD; ++r) {
++            uint4 v = x[(int64_t)r * chunk_v + i];
++            v.x = canon(v.x); v.y = canon(v.y);
++            v.z = canon(v.z); v.w = canon(v.w);
++            uint4 *peer = reinterpret_cast<uint4 *>(
++                (char *)buf_ptrs[r] + off);
++            st_volatile_v4(peer + (int64_t)rank * chunk_v + i, v);
++        }
++    }
++
++    // 2) re-sentinel the slot consumed last call
++    uint4 *mine_c = reinterpret_cast<uint4 *>(
++        (char *)buf_ptrs[rank] + off_c);
++    const uint4 sent = {SENT2, SENT2, SENT2, SENT2};
++    for (int64_t i = tid; i < clear_v; i += nthr)
++        st_volatile_v4(mine_c + i, sent);
++
++    // 3) poll the WORLD rows of my slot with a BATCHED sentinel check
++    //    (issue all world loads, then test together - the serial
++    //    do/while-per-rank variant chained up to world NVLink
++    //    latencies and lost to the flashinfer AR at small sizes),
++    //    accumulate fp32, store bf16
++    uint4 *mine = reinterpret_cast<uint4 *>((char *)buf_ptrs[rank] + off);
++    for (int64_t i = tid; i < chunk_v; i += nthr) {
++        uint4 vals[WORLD];
++        bool done = false;
++        while (!done) {
++            done = true;
++            #pragma unroll
++            for (int s = 0; s < WORLD; ++s) {
++                vals[s] = ld_volatile_v4(mine + (int64_t)s * chunk_v + i);
++                done &= !has_sentinel(vals[s]);
++            }
++        }
++        float2 acc[4] = {{0.f, 0.f}, {0.f, 0.f}, {0.f, 0.f}, {0.f, 0.f}};
++        #pragma unroll
++        for (int s = 0; s < WORLD; ++s)
++            acc_u4(acc, vals[s]);
++        uint4 o;
++        uint32_t *ow = &o.x;
++        #pragma unroll
++        for (int j = 0; j < 4; ++j) {
++            const __nv_bfloat162 b = __float22bfloat162_rn(acc[j]);
++            ow[j] = *reinterpret_cast<const uint32_t *>(&b);
++        }
++        out[i] = o;
++    }
++    TRIGGER_PDL();
++}
++
++// launch with the PDL attribute (pairs with GRID_DEP_SYNC/TRIGGER_PDL
++// in the kernels)
++template <typename K, typename... Args>
++static void launch_pdl(K kernel, int grid, int block, Args... args)
++{
++    cudaLaunchConfig_t cfg = {};
++    cudaLaunchAttribute attr[1];
++    attr[0].id = cudaLaunchAttributeProgrammaticStreamSerialization;
++    attr[0].val.programmaticStreamSerializationAllowed = 1;
++    cfg.gridDim = dim3(grid);
++    cfg.blockDim = dim3(block);
++    cfg.dynamicSmemBytes = 0;
++    cfg.stream = at::cuda::getCurrentCUDAStream();
++    cfg.attrs = attr;
++    cfg.numAttrs = 1;
++    C10_CUDA_CHECK(cudaLaunchKernelEx(&cfg, kernel, args...));
++}
++
++// dispatch the runtime world size to the compile-time template
++#define DISPATCH_WORLD(world, ...)                                     \
++    switch (world) {                                                   \
++        case 2: { constexpr int kWorld = 2; __VA_ARGS__; break; }      \
++        case 4: { constexpr int kWorld = 4; __VA_ARGS__; break; }      \
++        case 8: { constexpr int kWorld = 8; __VA_ARGS__; break; }      \
++        default: TORCH_CHECK(false, "unsupported world size ", world); \
++    }
++
++torch::Tensor ag_lamport(
++    torch::Tensor buf_ptrs, torch::Tensor rounds,
++    torch::Tensor clear_hist, torch::Tensor x,
++    int64_t data_off, int64_t slot_bytes, int64_t rank, int64_t world,
++    int64_t block)
++{
++    const int rows = x.size(0), cols = x.size(1);
++    const int64_t stride = x.stride(0);
++    TORCH_CHECK(x.scalar_type() == torch::kBFloat16);
++    TORCH_CHECK(cols % 8 == 0 && stride % 8 == 0,
++                "need 16B-aligned rows");
++    TORCH_CHECK(((uintptr_t)x.data_ptr()) % 16 == 0, "unaligned base");
++    TORCH_CHECK(clear_hist.numel() == rounds.numel() * 3);
++    auto out = torch::empty({rows, world * cols}, x.options());
++    DISPATCH_WORLD(world,
++        launch_pdl(ag_lamport_kernel<kWorld>,
++            (int)rounds.numel(), (int)block,
++            buf_ptrs.data_ptr<int64_t>(), rounds.data_ptr<int>(),
++            clear_hist.data_ptr<int>(),
++            reinterpret_cast<const uint4 *>(x.data_ptr()),
++            reinterpret_cast<uint4 *>(out.data_ptr()),
++            rows, (int)(cols / 8), stride / 8,
++            data_off, slot_bytes, (int)rank));
++    return out;
++}
++
++std::tuple<torch::Tensor, torch::Tensor> ag_mxfp8(
++    torch::Tensor buf_ptrs, torch::Tensor rounds,
++    torch::Tensor clear_hist, torch::Tensor x,
++    int64_t data_off, int64_t slot_bytes, int64_t rank, int64_t world,
++    int64_t block)
++{
++    const int rows = x.size(0), cols = x.size(1);
++    const int64_t stride = x.stride(0);
++    TORCH_CHECK(x.scalar_type() == torch::kBFloat16);
++    TORCH_CHECK(cols % 8 == 0 && stride % 8 == 0,
++                "need 16B-aligned rows");
++    TORCH_CHECK((world * cols) % 32 == 0, "gathered row % 32 != 0");
++    TORCH_CHECK(((uintptr_t)x.data_ptr()) % 16 == 0, "unaligned base");
++    TORCH_CHECK(clear_hist.numel() == rounds.numel() * 3);
++    auto out = torch::empty({rows, world * cols},
++                            x.options().dtype(torch::kFloat8_e4m3fn));
++    auto sf = torch::empty({rows, world * cols / 32},
++                           x.options().dtype(torch::kUInt8));
++    DISPATCH_WORLD(world,
++        launch_pdl(ag_mxfp8_lamport_kernel<kWorld>,
++            (int)rounds.numel(), (int)block,
++            buf_ptrs.data_ptr<int64_t>(), rounds.data_ptr<int>(),
++            clear_hist.data_ptr<int>(),
++            reinterpret_cast<const uint4 *>(x.data_ptr()),
++            reinterpret_cast<uint64_t *>(out.data_ptr()),
++            reinterpret_cast<uint8_t *>(sf.data_ptr()),
++            rows, (int)(cols / 8), stride / 8,
++            data_off, slot_bytes, (int)rank));
++    return {out, sf};
++}
++
++// Column reduce-scatter: FlashInfer oneshot Lamport AR layout
++// (allreduce_fusion_kernel_oneshot_lamport) with push/poll shrunk to
++// the local column chunk - world x less wire than AR.
++//
++// Slot rotation matches FI: rounds[0]=flag, rounds[1]=entry counter,
++// rounds[2]=previous clear size in bytes (not per-CTA counters), so
++// the launch grid can vary per call and still agree on the slot.
++//
++// Poll matches FI: load all world ranks, then check sentinels together
++// (memory-level parallelism), instead of spinning one peer at a time.
++//
++// (Fused-RMSNorm, deferred-scale, and fused-MoE-finalize variants of
++// this kernel existed and were REMOVED: every one of them lost to the
++// flashinfer fused AR+norm tail - see moe_optimization.md Appendix A.)
++template <int WORLD>
++__global__ void rs_cols_lamport_kernel(
++    const int64_t *__restrict__ buf_ptrs, int *__restrict__ meta,
++    const uint4 *__restrict__ x, uint4 *__restrict__ out,
++    int rows, int chunk_v, int64_t x_stride_v,
++    int64_t data_off, int64_t slot_bytes,
++    int rank)
++{
++    GRID_DEP_SYNC();
++    // meta: [flag, counter, clear_bytes]
++    __shared__ int s_flag, s_clear;
++    if (threadIdx.x == 0) {
++        s_flag = meta[0];
++        s_clear = meta[2];
++        atomicAdd(meta + 1, 1);
++    }
++    __syncthreads();
++    const int flag = s_flag;
++    const int64_t off = data_off + (int64_t)(flag % 3) * slot_bytes;
++    const int64_t off_c = data_off + (int64_t)((flag + 2) % 3) * slot_bytes;
++    const int64_t tot = (int64_t)rows * chunk_v;
++    const int64_t clear_v = (int64_t)s_clear / 16;
++
++    // ---- FI-style: one block owns one token (stride by grid) ----
++    for (int t = (int)blockIdx.x; t < rows; t += (int)gridDim.x) {
++        // 1) push: peer r gets my r-th column slice of token t
++        for (int c = (int)threadIdx.x; c < chunk_v; c += (int)blockDim.x) {
++            const int64_t idx = (int64_t)t * chunk_v + c;
++            #pragma unroll
++            for (int r = 0; r < WORLD; ++r) {
++                uint4 v = x[(int64_t)t * x_stride_v
++                            + (int64_t)r * chunk_v + c];
++                v.x = canon(v.x); v.y = canon(v.y);
++                v.z = canon(v.z); v.w = canon(v.w);
++                uint4 *peer = reinterpret_cast<uint4 *>(
++                    (char *)buf_ptrs[r] + off);
++                st_volatile_v4(peer + (int64_t)rank * tot + idx, v);
++            }
++        }
++    }
++
++    // 2) clear the slot the previous call consumed (size-tracked)
++    {
++        uint4 *mine_c = reinterpret_cast<uint4 *>(
++            (char *)buf_ptrs[rank] + off_c);
++        const uint4 sent = {SENT2, SENT2, SENT2, SENT2};
++        const int tid = blockIdx.x * blockDim.x + threadIdx.x;
++        const int nthr = gridDim.x * blockDim.x;
++        for (int64_t i = tid; i < clear_v; i += nthr)
++            st_volatile_v4(mine_c + i, sent);
++    }
++
++    uint4 *mine = reinterpret_cast<uint4 *>(
++        (char *)buf_ptrs[rank] + off);
++
++    for (int t = (int)blockIdx.x; t < rows; t += (int)gridDim.x) {
++        // 3) FI batched poll: issue all ranks, then check together
++        for (int c = (int)threadIdx.x; c < chunk_v; c += (int)blockDim.x) {
++            const int64_t idx = (int64_t)t * chunk_v + c;
++            uint4 vals[WORLD];
++            bool done = false;
++            while (!done) {
++                done = true;
++                #pragma unroll
++                for (int r = 0; r < WORLD; ++r) {
++                    vals[r] = ld_volatile_v4(
++                        mine + (int64_t)r * tot + idx);
++                    done &= !has_sentinel(vals[r]);
++                }
++            }
++            float2 acc[4] = {{0.f, 0.f}, {0.f, 0.f},
++                             {0.f, 0.f}, {0.f, 0.f}};
++            #pragma unroll
++            for (int r = 0; r < WORLD; ++r)
++                acc_u4(acc, vals[r]);
++            uint4 o;
++            uint32_t *ow = &o.x;
++            #pragma unroll
++            for (int j = 0; j < 4; ++j) {
++                const __nv_bfloat162 b = __float22bfloat162_rn(acc[j]);
++                ow[j] = *reinterpret_cast<const uint32_t *>(&b);
++            }
++            out[idx] = o;
++        }
++    }
++
++    // FI-style flag advance: block 0 waits until every CTA entered
++    if (blockIdx.x == 0 && threadIdx.x == 0) {
++        while (meta[1] != (int)gridDim.x) {}
++        meta[0] = (flag + 1) % 3;
++        meta[2] = (int)((int64_t)WORLD * tot * 16);
++        meta[1] = 0;
++    }
++    TRIGGER_PDL();
++}
++
++
++torch::Tensor rs_cols(
++    torch::Tensor buf_ptrs, torch::Tensor rounds, torch::Tensor x,
++    int64_t data_off, int64_t slot_bytes, int64_t rank, int64_t world)
++{
++    const int rows = x.size(0), cols = x.size(1);
++    const int64_t stride = x.stride(0);
++    TORCH_CHECK(x.scalar_type() == torch::kBFloat16);
++    TORCH_CHECK(cols % (world * 8) == 0 && stride % 8 == 0,
++                "need 16B-aligned chunks");
++    TORCH_CHECK(((uintptr_t)x.data_ptr()) % 16 == 0, "unaligned base");
++    TORCH_CHECK(rounds.numel() >= 3, "rounds needs [flag,ctr,clear]");
++    const int chunk_cols = cols / world;
++    const int chunk_v = chunk_cols / 8;
++    const int64_t numel_v = (int64_t)rows * chunk_v;
++    TORCH_CHECK(numel_v * world * 16 <= slot_bytes, "slot too small");
++    // FI-like launch: one CTA per token, block covers the column chunk.
++    // Cap grid by SM count so large B still saturates without over-sub.
++    int sm = 0;
++    cudaDeviceGetAttribute(&sm, cudaDevAttrMultiProcessorCount,
++                           x.get_device());
++    if (sm < 1) sm = 1;
++    int grid = rows < sm ? rows : sm;
++    if (grid < 1) grid = 1;
++    const int block = 256;
++    // clear_bytes (meta[2]) must be primed by the host to slot_bytes
++    // before the first call; do NOT read it back here (graph-unsafe).
++    auto out = torch::empty({rows, chunk_cols}, x.options());
++    DISPATCH_WORLD(world,
++        launch_pdl(rs_cols_lamport_kernel<kWorld>, grid, block,
++            buf_ptrs.data_ptr<int64_t>(), rounds.data_ptr<int>(),
++            reinterpret_cast<const uint4 *>(x.data_ptr()),
++            reinterpret_cast<uint4 *>(out.data_ptr()),
++            rows, chunk_v, stride / 8,
++            data_off, slot_bytes, (int)rank));
++    return out;
++}
++
++torch::Tensor rs_lamport(
++    torch::Tensor buf_ptrs, torch::Tensor rounds,
++    torch::Tensor clear_hist, torch::Tensor x,
++    int64_t data_off, int64_t slot_bytes, int64_t rank, int64_t world,
++    int64_t block)
++{
++    TORCH_CHECK(x.is_contiguous());
++    TORCH_CHECK(x.scalar_type() == torch::kBFloat16);
++    const int64_t numel = x.numel();
++    TORCH_CHECK(numel % world == 0);
++    const int64_t chunk = numel / world;
++    TORCH_CHECK(chunk % 8 == 0, "need 16B-aligned chunks");
++    TORCH_CHECK(((uintptr_t)x.data_ptr()) % 16 == 0, "unaligned base");
++    TORCH_CHECK(clear_hist.numel() == rounds.numel() * 3);
++    auto out = torch::empty({chunk}, x.options());
++    DISPATCH_WORLD(world,
++        launch_pdl(rs_lamport_kernel<kWorld>,
++            (int)rounds.numel(), (int)block,
++            buf_ptrs.data_ptr<int64_t>(), rounds.data_ptr<int>(),
++            clear_hist.data_ptr<int>(),
++            reinterpret_cast<const uint4 *>(x.data_ptr()),
++            reinterpret_cast<uint4 *>(out.data_ptr()),
++            chunk / 8, data_off, slot_bytes,
++            (int)rank));
++    return out;
++}
++
++// ------------------------------------------------------------------
++// Copy-engine (CE / DMA) collectives support. The data movement is
++// cudaMemcpy2DAsync peer copies issued from the host - the DMA
++// engines do the transfer, ZERO SMs, so it overlaps compute by
++// construction and has no Lamport re-sentinel cost at large sizes.
++//
++// Sync = ONE kernel per collective, placed AFTER the copies (push
++// orientation: every rank only SENDS, so the only thing to wait for
++// is arrival of the peers' pushes):
++//
++//   * publish "my round-r pushes are complete" - correct by stream
++//     order, the kernel runs only after this rank's memcpys finished;
++//   * wait for every peer's publication (the unavoidable data-arrival
++//     rendezvous, gating only the CONSUMER of the slot, never the
++//     copies);
++//   * bump the device round counter (graph replay safe: no host
++//     state, fixed memcpy node addresses, single data slot).
++//
++// There is NO pre-copy barrier. Slot-reuse safety comes from stream
++// order + pipeline symmetry: my round r+1 copies are issued after my
++// round-r consumer (same stream), and every rank runs the same
++// pipeline, so by the time anyone pushes round r+1 into my slot my
++// consumer has had one full compute phase to finish reading round r.
++//
++// Two thread layouts (pick by measurement): one warp (thread t owns
++// peer t) or one thread (loops over peers; batches the poll loads).
++// ------------------------------------------------------------------
++
++__device__ __forceinline__ void st_release_sys(int *p, int v) {
++    asm volatile("st.release.sys.global.s32 [%0], %1;" :: "l"(p), "r"(v));
++}
++
++__device__ __forceinline__ int ld_acquire_sys(const int *p) {
++    int v;
++    asm volatile("ld.acquire.sys.global.s32 %0, [%1];" : "=r"(v) : "l"(p));
++    return v;
++}
++
++template <int WORLD>
++__global__ void ce_sync_warp_kernel(
++    const int64_t *__restrict__ buf_ptrs, int *__restrict__ round_buf,
++    int64_t flag_off, int rank)
++{
++    GRID_DEP_SYNC();
++    const int r = *round_buf;
++    if (threadIdx.x < WORLD) {
++        int *peer = reinterpret_cast<int *>(
++            (char *)buf_ptrs[threadIdx.x] + flag_off) + rank;
++        st_release_sys(peer, r);
++        const int *mine = reinterpret_cast<const int *>(
++            (char *)buf_ptrs[rank] + flag_off) + threadIdx.x;
++        // nanosleep backoff: the spin can last a full DMA copy time
++        // when overlapped with compute, and a tight .sys-acquire poll
++        // loop measurably slows a concurrent GEMM (+15%); backing off
++        // makes the wait free while adding <1 us of signal latency
++        while (ld_acquire_sys(mine) < r) { __nanosleep(256); }
++    }
++    __syncwarp();
++    if (threadIdx.x == 0) *round_buf = r + 1;
++    TRIGGER_PDL();
++}
++
++template <int WORLD>
++__global__ void ce_sync_1t_kernel(
++    const int64_t *__restrict__ buf_ptrs, int *__restrict__ round_buf,
++    int64_t flag_off, int rank)
++{
++    GRID_DEP_SYNC();
++    const int r = *round_buf;
++    #pragma unroll
++    for (int p = 0; p < WORLD; ++p) {
++        int *peer = reinterpret_cast<int *>(
++            (char *)buf_ptrs[p] + flag_off) + rank;
++        st_release_sys(peer, r);
++    }
++    const int *mine = reinterpret_cast<const int *>(
++        (char *)buf_ptrs[rank] + flag_off);
++    bool done = false;
++    while (!done) {
++        done = true;
++        int v[WORLD];
++        #pragma unroll
++        for (int p = 0; p < WORLD; ++p)
++            v[p] = ld_acquire_sys(mine + p);
++        #pragma unroll
++        for (int p = 0; p < WORLD; ++p)
++            done &= (v[p] >= r);
++        if (!done) __nanosleep(256);
++    }
++    *round_buf = r + 1;
++    TRIGGER_PDL();
++}
++
++void ce_sync(torch::Tensor buf_ptrs, torch::Tensor round_buf,
++             int64_t flag_off, int64_t rank, int64_t world,
++             int64_t threads)
++{
++    DISPATCH_WORLD(world,
++        if (threads == 1)
++            launch_pdl(ce_sync_1t_kernel<kWorld>, 1, 1,
++                       (const int64_t *)buf_ptrs.data_ptr<int64_t>(),
++                       round_buf.data_ptr<int>(), flag_off, (int)rank);
++        else
++            launch_pdl(ce_sync_warp_kernel<kWorld>, 1, 32,
++                       (const int64_t *)buf_ptrs.data_ptr<int64_t>(),
++                       round_buf.data_ptr<int>(), flag_off, (int)rank));
++}
++
++// pitched device-to-device copy on the current stream (UVA resolves
++// peer pointers; the driver routes it through a copy engine)
++void ce_copy2d(int64_t dst, int64_t dpitch, int64_t src, int64_t spitch,
++               int64_t width, int64_t height)
++{
++    C10_CUDA_CHECK(cudaMemcpy2DAsync(
++        reinterpret_cast<void *>(dst), (size_t)dpitch,
++        reinterpret_cast<const void *>(src), (size_t)spitch,
++        (size_t)width, (size_t)height, cudaMemcpyDefault,
++        at::cuda::getCurrentCUDAStream()));
++}
++
++// SM copy kernel for the LOCAL (same-device) pitched copy. A local
++// cudaMemcpy2DAsync is executed by the driver's SM copy path and it
++// does NOT co-schedule with a saturating kernel - the profiler shows
++// it queued until the concurrent GEMM nearly drains, which stalls the
++// arrival sync and serializes the whole CE collective with compute.
++// A regular small kernel (like ce_sync) slots into SMs as blocks of
++// the big kernel retire, so the local shard placement is done here.
++__global__ void local_copy2d_kernel(
++    char *__restrict__ dst, int64_t dpitch,
++    const char *__restrict__ src, int64_t spitch,
++    int64_t width, int64_t height)
++{
++    GRID_DEP_SYNC();
++    const int64_t wvec = width / 16;  // width%16==0 checked host-side
++    const int64_t total = wvec * height;
++    const int64_t stride = (int64_t)gridDim.x * blockDim.x;
++    for (int64_t i = (int64_t)blockIdx.x * blockDim.x + threadIdx.x;
++         i < total; i += stride) {
++        const int64_t row = i / wvec, col = (i % wvec) * 16;
++        *reinterpret_cast<uint4 *>(dst + row * dpitch + col) =
++            *reinterpret_cast<const uint4 *>(src + row * spitch + col);
++    }
++    TRIGGER_PDL();
++}
++
++void ce_local2d(int64_t dst, int64_t dpitch, int64_t src, int64_t spitch,
++                int64_t width, int64_t height)
++{
++    if ((width | dst | src | dpitch | spitch) % 16 == 0) {
++        const int64_t total = (width / 16) * height;
++        int grid = (int)((total + 255) / 256);
++        grid = grid < 1 ? 1 : (grid > 64 ? 64 : grid);
++        launch_pdl(local_copy2d_kernel, grid, 256,
++                   reinterpret_cast<char *>(dst), dpitch,
++                   reinterpret_cast<const char *>(src), spitch,
++                   width, height);
++    } else {
++        ce_copy2d(dst, dpitch, src, spitch, width, height);
++    }
++}
++
++// ONE pybind crossing for a whole collective's copy set: jobs is a CPU
++// int64 tensor [N, 6] of (dst, dpitch, src, spitch, width, height);
++// destinations inside [local_lo, local_hi) route through the SM copy
++// kernel exactly like the Python issue() dispatch. Eager host cost of
++// the per-peer loop measured ~4.2us/call x 28 calls per SP prefill
++// iteration - this folds each collective's 8 calls into 1.
++void ce_copy2d_batch(torch::Tensor jobs, int64_t local_lo,
++                     int64_t local_hi)
++{
++    TORCH_CHECK(jobs.device().is_cpu() && jobs.dtype() == torch::kLong &&
++                jobs.is_contiguous() && jobs.numel() % 6 == 0,
++                "jobs must be a contiguous CPU int64 [N,6] tensor");
++    const int64_t *j = jobs.data_ptr<int64_t>();
++    const int64_t n = jobs.numel() / 6;
++    for (int64_t i = 0; i < n; ++i) {
++        const int64_t *e = j + i * 6;
++        if (e[0] >= local_lo && e[0] < local_hi)
++            ce_local2d(e[0], e[1], e[2], e[3], e[4], e[5]);
++        else
++            ce_copy2d(e[0], e[1], e[2], e[3], e[4], e[5]);
++    }
++}
++
++// ------------------------------------------------------------------
++// Whole-collective host paths in C++ (one pybind crossing each): job
++// computation, copy issue, sync and the slab reduce all happen here.
++// World is a RUNTIME arg for the pointer math (any TP) and reaches the
++// templated ce_sync via its own DISPATCH_WORLD (TP = 2 / 4 / 8).
++// Semantics are byte-identical to comm.py's push_rows / reduce_rows /
++// all_gather_rows / all_gather (cols) — those remain as the reference
++// implementations (B10_CE_CPP=0).
++// ------------------------------------------------------------------
++
++static inline void _ce_issue(int64_t dst, int64_t dpitch, int64_t src,
++                             int64_t spitch, int64_t width, int64_t height,
++                             int64_t lo, int64_t hi)
++{
++    if (dst >= lo && dst < hi)
++        ce_local2d(dst, dpitch, src, spitch, width, height);
++    else
++        ce_copy2d(dst, dpitch, src, spitch, width, height);
++}
++
++// all-to-all half of a row RS: push row-block r of [B, W] to rank r.
++void ce_push_rows(torch::Tensor ptrs_cpu, torch::Tensor x,
++                  int64_t data_off, int64_t slot_bytes,
++                  int64_t rank, int64_t world)
++{
++    TORCH_CHECK(x.is_contiguous() && x.dim() == 2 &&
++                x.size(0) % world == 0, "push_rows: [B,W] contiguous, B%world==0");
++    const int64_t chunk = x.size(0) / world;
++    const int64_t slab = chunk * x.size(1) * (int64_t)x.element_size();
++    TORCH_CHECK(world * slab <= slot_bytes, "CE instance too small");
++    const int64_t *p = ptrs_cpu.data_ptr<int64_t>();
++    const int64_t lo = p[rank], hi = lo + data_off + slot_bytes;
++    const int64_t src0 = (int64_t)(intptr_t)x.data_ptr();
++    for (int64_t i = 0; i < world; ++i) {
++        const int64_t r = (rank + 1 + i) % world;  // self last
++        _ce_issue(p[r] + data_off + rank * slab, slab,
++                  src0 + r * slab, slab, slab, 1, lo, hi);
++    }
++}
++
++// sync + fp32-accumulated sum of the world slabs -> my [chunk, cols].
++torch::Tensor ce_reduce_rows(torch::Tensor ptrs_cpu, torch::Tensor buf_ptrs,
++                             torch::Tensor round_buf, int64_t data_off,
++                             int64_t rank, int64_t world,
++                             int64_t sync_threads,
++                             int64_t chunk, int64_t cols)
++{
++    ce_sync(buf_ptrs, round_buf, 0, rank, world, sync_threads);
++    const int64_t *p = ptrs_cpu.data_ptr<int64_t>();
++    auto opts = torch::TensorOptions()
++        .dtype(torch::kBFloat16).device(buf_ptrs.device());
++    auto slabs = torch::from_blob(
++        reinterpret_cast<void *>((intptr_t)(p[rank] + data_off)),
++        {world, chunk, cols}, opts);
++    return slabs.sum(0);
++}
++
++// row AG: my [B/world, W] slice -> full [B, W] view of my slot.
++torch::Tensor ce_ag_rows(torch::Tensor ptrs_cpu, torch::Tensor buf_ptrs,
++                         torch::Tensor round_buf, torch::Tensor x,
++                         int64_t data_off, int64_t slot_bytes,
++                         int64_t rank, int64_t world, int64_t sync_threads)
++{
++    TORCH_CHECK(x.is_contiguous() && x.dim() == 2, "ag_rows: [rows,W] contiguous");
++    const int64_t rows = x.size(0), cols = x.size(1);
++    const int64_t slab = rows * cols * (int64_t)x.element_size();
++    TORCH_CHECK(world * slab <= slot_bytes, "CE instance too small");
++    const int64_t *p = ptrs_cpu.data_ptr<int64_t>();
++    const int64_t lo = p[rank], hi = lo + data_off + slot_bytes;
++    const int64_t src0 = (int64_t)(intptr_t)x.data_ptr();
++    for (int64_t i = 0; i < world; ++i) {
++        const int64_t r = (rank + 1 + i) % world;
++        _ce_issue(p[r] + data_off + rank * slab, slab,
++                  src0, slab, slab, 1, lo, hi);
++    }
++    ce_sync(buf_ptrs, round_buf, 0, rank, world, sync_threads);
++    auto opts = torch::TensorOptions()
++        .dtype(x.scalar_type()).device(x.device());
++    return torch::from_blob(
++        reinterpret_cast<void *>((intptr_t)(p[rank] + data_off)),
++        {world * rows, cols}, opts);
++}
++
++// column AG: [rows, C] shards (possibly row-strided) -> [rows, world*C].
++torch::Tensor ce_ag_cols(torch::Tensor ptrs_cpu, torch::Tensor buf_ptrs,
++                         torch::Tensor round_buf, torch::Tensor x,
++                         int64_t data_off, int64_t slot_bytes,
++                         int64_t rank, int64_t world, int64_t sync_threads)
++{
++    TORCH_CHECK(x.dim() == 2 && x.stride(1) == 1, "ag_cols: [rows,C], inner-contig");
++    const int64_t rows = x.size(0), cols = x.size(1);
++    const int64_t esz = (int64_t)x.element_size();
++    const int64_t row_bytes = cols * esz;
++    const int64_t dpitch = world * row_bytes;
++    TORCH_CHECK(rows * dpitch <= slot_bytes, "CE instance too small");
++    const int64_t *p = ptrs_cpu.data_ptr<int64_t>();
++    const int64_t lo = p[rank], hi = lo + data_off + slot_bytes;
++    const int64_t src0 = (int64_t)(intptr_t)x.data_ptr();
++    const int64_t spitch = x.stride(0) * esz;
++    for (int64_t i = 0; i < world; ++i) {
++        const int64_t r = (rank + 1 + i) % world;
++        _ce_issue(p[r] + data_off + rank * row_bytes, dpitch,
++                  src0, spitch, row_bytes, rows, lo, hi);
++    }
++    ce_sync(buf_ptrs, round_buf, 0, rank, world, sync_threads);
++    auto opts = torch::TensorOptions()
++        .dtype(x.scalar_type()).device(x.device());
++    return torch::from_blob(
++        reinterpret_cast<void *>((intptr_t)(p[rank] + data_off)),
++        {rows, world * cols}, opts);
++}
++"""
++
++_CPP_SRC = """
++#include <torch/extension.h>
++torch::Tensor ag_lamport(
++    torch::Tensor buf_ptrs, torch::Tensor rounds,
++    torch::Tensor clear_hist, torch::Tensor x,
++    int64_t data_off, int64_t slot_bytes, int64_t rank, int64_t world,
++    int64_t block);
++std::tuple<torch::Tensor, torch::Tensor> ag_mxfp8(
++    torch::Tensor buf_ptrs, torch::Tensor rounds,
++    torch::Tensor clear_hist, torch::Tensor x,
++    int64_t data_off, int64_t slot_bytes, int64_t rank, int64_t world,
++    int64_t block);
++torch::Tensor rs_lamport(
++    torch::Tensor buf_ptrs, torch::Tensor rounds,
++    torch::Tensor clear_hist, torch::Tensor x,
++    int64_t data_off, int64_t slot_bytes, int64_t rank, int64_t world,
++    int64_t block);
++torch::Tensor rs_cols(
++    torch::Tensor buf_ptrs, torch::Tensor rounds, torch::Tensor x,
++    int64_t data_off, int64_t slot_bytes, int64_t rank, int64_t world);
++void ce_sync(torch::Tensor buf_ptrs, torch::Tensor round_buf,
++             int64_t flag_off, int64_t rank, int64_t world,
++             int64_t threads);
++void ce_copy2d(int64_t dst, int64_t dpitch, int64_t src, int64_t spitch,
++               int64_t width, int64_t height);
++void ce_local2d(int64_t dst, int64_t dpitch, int64_t src, int64_t spitch,
++                int64_t width, int64_t height);
++void ce_copy2d_batch(torch::Tensor jobs, int64_t local_lo,
++                     int64_t local_hi);
++void ce_push_rows(torch::Tensor ptrs_cpu, torch::Tensor x,
++                  int64_t data_off, int64_t slot_bytes,
++                  int64_t rank, int64_t world);
++torch::Tensor ce_reduce_rows(torch::Tensor ptrs_cpu, torch::Tensor buf_ptrs,
++                             torch::Tensor round_buf, int64_t data_off,
++                             int64_t rank, int64_t world,
++                             int64_t sync_threads,
++                             int64_t chunk, int64_t cols);
++torch::Tensor ce_ag_rows(torch::Tensor ptrs_cpu, torch::Tensor buf_ptrs,
++                         torch::Tensor round_buf, torch::Tensor x,
++                         int64_t data_off, int64_t slot_bytes,
++                         int64_t rank, int64_t world, int64_t sync_threads);
++torch::Tensor ce_ag_cols(torch::Tensor ptrs_cpu, torch::Tensor buf_ptrs,
++                         torch::Tensor round_buf, torch::Tensor x,
++                         int64_t data_off, int64_t slot_bytes,
++                         int64_t rank, int64_t world, int64_t sync_threads);
++"""
++
++_mod = None
++
++
++def get_module():
++    """Compile on first use (file-locked, safe under torchrun)."""
++    global _mod
++    if _mod is None:
++        from torch.utils.cpp_extension import load_inline
++
++        from ...b10_kernels import _arch as arch
++
++        # `setdefault` so a build-time prebuild can pin the target without a
++        # live device (arch.torch_arch_list() reads B10_FORCE_SM first, and the
++        # eager get_device_capability() call this replaced made GPU-less
++        # prebuilds impossible).
++        os.environ.setdefault("TORCH_CUDA_ARCH_LIST", arch.torch_arch_list())
++        _mod = load_inline(
++            name=arch.ext_name("k3_comm_cuda"),
++            cpp_sources=_CPP_SRC,
++            cuda_sources=_CUDA_SRC,
++            functions=["ag_lamport", "ag_mxfp8",
++                       "rs_lamport", "rs_cols",
++                       "ce_sync", "ce_copy2d", "ce_local2d",
++                       "ce_copy2d_batch", "ce_push_rows",
++                       "ce_reduce_rows", "ce_ag_rows", "ce_ag_cols"],
++            extra_cuda_cflags=["-O3"],
++            extra_include_paths=[],
++            verbose=False,
++        )
++    return _mod
+diff --git a/tensorrt_llm/_torch/kimi_k3_optim/config.py b/tensorrt_llm/_torch/kimi_k3_optim/config.py
+index 9794a935f1..a99b7f6bab 100644
+--- a/tensorrt_llm/_torch/kimi_k3_optim/config.py
++++ b/tensorrt_llm/_torch/kimi_k3_optim/config.py
+@@ -13,9 +13,12 @@ ATTN_RES_BLOCK_SIZE = 12
+ NUM_ATTN_RES_BLOCKS = 8
+ NUM_EXPERTS = 896
+ TOP_K = 16
+-MOE_INTER = 384
++# Aligned with the released Kimi-K3 config (moe_intermediate_size=3072,
++# num_shared_experts=2); the old 384x16 factorization kept the shared
++# product (6144) but understated the routed width 8x.
++MOE_INTER = 3072
+ MOE_LATENT = 3584
+-NUM_SHARED_EXPERTS = 16
++NUM_SHARED_EXPERTS = 2
+ SHARED_INTER = MOE_INTER * NUM_SHARED_EXPERTS
+ N_GROUP = 1
+ TOPK_GROUP = 1
+diff --git a/tensorrt_llm/_torch/kimi_k3_optim/moe_layer.py b/tensorrt_llm/_torch/kimi_k3_optim/moe_layer.py
+index 71ff2a6610..e2ee9c320f 100644
+--- a/tensorrt_llm/_torch/kimi_k3_optim/moe_layer.py
++++ b/tensorrt_llm/_torch/kimi_k3_optim/moe_layer.py
+@@ -32,6 +32,7 @@ from enum import Enum
+ 
+ import torch
+ 
++from tensorrt_llm.logger import logger
+ from tensorrt_llm._torch.models.modeling_nemotron_h import NemotronHMOE
+ from tensorrt_llm._torch.modules.fused_moe.interface import ActivationType
+ 
+@@ -43,6 +44,8 @@ from .b10_kernels import (
+     situ_and_mul,
+     warmup_radix,
+ )
++from .b10_kernels import _arch
++from .capabilities import Capabilities
+ from .config import (
+     HIDDEN,
+     MOE_INTER,
+@@ -59,10 +62,12 @@ from .config import (
+ from ..modules.situ import SiTUAndMul
+ 
+ SMALL_BATCH_MAX_TOKENS = 32
+-# 256 since Aug-19 (was 128): the decode path still beats the baseline
+-# at 192/256 (see agent/moe_optimization.md), and extending the cap
+-# removes half of the awkward 129..2048 fall-back-to-baseline window.
+-DECODE_MAX_TOKENS = 256
++DECODE_MAX_TOKENS = 128
++# 128 since the inter=3072 width fix (2026-08-21, GB300 TP8): at the
++# checkpoint expert width the decode plan LOSES at 256 (-0.7% vs
++# baseline) while the prefill plan wins (+2.9%); at 128 decode still
++# wins +12.2%. The Aug-19 extension to 256 was measured at the stale
++# 384 width. B200-at-3072 is unmeasured; re-decide there if it matters.
+ # Aug-11 re-search (post route-side-stream/evict-last/zero-copy, and
+ # reinforced by the routing-indices graph patch): the multimem tail wins
+ # from B=16 up (was <=16 sharded). Both flips hold with the graph patch
+@@ -233,9 +238,44 @@ class B10KimiK3MoELayer(NemotronHMOE):
+         from tensorrt_llm._torch.modules.fused_moe.moe_op_backend import (
+             get_op_backend,
+         )
++        #
++        # ARCH GATE. The paragraph above holds on B200 (sm_100) only. The
++        # native runner (MxE4m3MxE2m1BlockScaleMoERunner, trtllmGen
++        # batchedGemm) ships **SwiGlu-only** MXFP4 kernels on sm_103: built
++        # with act=SiTU it raises "No kernel found ... mDtypeA: MxE4m3,
++        # mDtypeB: MxE2m1, mRouteAct: 1", with and without the AutoTuner, so
++        # it is a missing kernel and not a missing tactic. Kimi-K3's routed
++        # experts need SiTU, so on anything other than sm_100 the FlashInfer
++        # op backend -- which runs the same op correctly there -- is the only
++        # working choice, and the "never" above becomes "never on B200".
++        #
++        # Gate on the arch that HAS the kernels rather than enumerating the
++        # ones that do not: a new part is then correct-but-slower by default
++        # instead of crashing, and this line needs no edit per tapeout.
+         experts_backend = getattr(self.experts, "backend", self.experts)
+-        experts_backend.use_flashinfer = False
+-        experts_backend.op_backend = get_op_backend("trtllm")
++        # The gap is activation-CONDITIONAL, so gate on it rather than on the
++        # arch alone. trtllmGen's sm_103 MXFP4 kernels are SwiGlu-only, and
++        # SwiGlu is what a non-SiTU checkpoint runs -- so native is correct
++        # there and forcing FlashInfer would give up the measured native pin
++        # for nothing. Read SiTU off TRT-LLM's own verdict
++        # (_is_situ_activation = activation_type is Swiglu AND
++        # pretrained_config.hidden_act == "situ"), never re-derived here.
++        #
++        # Note for anyone hitting this off B200: the FlashInfer fallback needs
++        # a build carrying ActivationType.Situ. Stock flashinfer 0.6.12 (the
++        # rc19 pin) stops at InvalidType(8) and has no Situ member, so a SiTU
++        # checkpoint fails earlier, in _check_flashinfer_backend_support.
++        situ = bool(getattr(experts_backend, "_is_situ_activation", False))
++        native_ok = _arch.sm_version() == (10, 0) or not situ
++        experts_backend.use_flashinfer = not native_ok
++        experts_backend.op_backend = get_op_backend(
++            "trtllm" if native_ok else "flashinfer")
++        if not native_ok:
++            logger.warning(
++                f"[B10-KIMI-MOE] sm_{_arch.suffix()}: routed experts on the "
++                "FlashInfer op backend (native trtllmGen has no SiTU MXFP4 "
++                "kernels off sm_100). First use downloads cubins and JITs "
++                "(~10-15 min cold); persist ~/.cache/flashinfer.")
+         self._optimized = False
+ 
+     def attach_collectives(self, collectives) -> None:
+@@ -262,6 +302,13 @@ class B10KimiK3MoELayer(NemotronHMOE):
+         self._world, self._rank = comm.world, comm.rank
+         self._max_batch = max_batch
+ 
++        # Per-stage kill switches (KIMI_B10_DISABLE_STAGES): decided once,
++        # here -- outside any timed or captured region -- and agreed across
++        # ranks, because a collective-bearing stage enabled on some ranks
++        # only deadlocks instead of failing. See capabilities.py.
++        self._capabilities = Capabilities.probe(getattr(comm, "group", None))
++        self._capabilities.log_once(self._rank)
++
+         fc1 = self.fc1_latent_proj.weight.data
+         fc2 = self.fc2_latent_proj.weight.data
+         width = MOE_LATENT // self._world
+@@ -285,6 +332,19 @@ class B10KimiK3MoELayer(NemotronHMOE):
+         # cached) so the first forward never pays a JIT compile.
+         warmup_radix()
+ 
++        if max_batch > 0:
++            # Tune the fused column-AG plan for every decode graph bucket
++            # OUTSIDE capture: the first captured call would otherwise tune
++            # inside the graph and bake a cold plan (or fail capture).
++            tune = getattr(comm, "tune_col_ag", None)
++            if tune is not None:
++                width = MOE_LATENT // self._world
++                batch = 1
++                while batch <= max_batch:
++                    tune(torch.empty(batch, width, device=fc1.device,
++                                     dtype=torch.bfloat16))
++                    batch *= 2
++
+         if max_batch > 0:
+             # Fused decode front weight [fc1-shard | shared g/u | gate].
+             # ONE storage: the shared gate/up and gate Linears are
+@@ -310,7 +370,15 @@ class B10KimiK3MoELayer(NemotronHMOE):
+             raise TypeError("B10 layer requires TRTLLMGenFusedMoE")
+         if not getattr(backend, "has_w4a8_mxfp4_mxfp8", False):
+             raise TypeError("B10 layer requires W4A8 MXFP4/MXFP8 experts")
+-        assert not backend.use_flashinfer  # pinned native at __init__
++        # __init__ pins the backend per arch: native on sm_100, FlashInfer
++        # elsewhere (no SiTU MXFP4 kernels in the native runner). Assert the
++        # pin matches the arch rather than asserting one specific backend.
++        expect_flashinfer = (
++            _arch.sm_version() != (10, 0)
++            and bool(getattr(backend, "_is_situ_activation", False)))
++        assert backend.use_flashinfer == expect_flashinfer, (
++            f"expected use_flashinfer={expect_flashinfer} on "
++            f"sm_{_arch.suffix()}")
+         self._gen_backend = backend
+ 
+         device = fc1.device
+@@ -326,7 +394,7 @@ class B10KimiK3MoELayer(NemotronHMOE):
+         self._optimized = True
+ 
+     def _config(self, tokens: int) -> ExperimentConfig:
+-        return measured_config(tokens)
++        return self._capabilities.filter(measured_config(tokens))
+ 
+     def _front(self, h: torch.Tensor, cfg: ExperimentConfig) -> _FrontResult:
+         front = cfg.decode_front
+@@ -550,7 +618,16 @@ class B10KimiK3MoELayer(NemotronHMOE):
+             shared_ref = self._fork_shared(
+                 h, gate_up=front.shared_gate_up, out=shared_dst)
+ 
+-        routed = self._experts(latent, ids_scales)
++        # Decode experts must honour the same activation-conditional arch
++        # gap the prefill axis does: with SiTU experts on sm_103 the NATIVE
++        # trtllmGen runner has no kernel ("No kernel found ... mEltwiseActType
++        # : 2") -- the hardcoded NATIVE default here was masked while the
++        # bench baseline ran SwiGlu, and crashed the moment the baseline was
++        # aligned with the checkpoint. capabilities.probe already knows.
++        routed = self._experts(
++            latent, ids_scales,
++            ExpertBackend.NATIVE if self._capabilities.native_experts
++            else ExpertBackend.FLASHINFER)
+         output = self._tail(routed, shared_ref, tail)
+         return output.view(hidden_states.shape)
+ 
+diff --git a/tensorrt_llm/_torch/kimi_k3_optim/serving.py b/tensorrt_llm/_torch/kimi_k3_optim/serving.py
+index ff69d3b67e..2c11dd34dd 100644
+--- a/tensorrt_llm/_torch/kimi_k3_optim/serving.py
++++ b/tensorrt_llm/_torch/kimi_k3_optim/serving.py
+@@ -3,16 +3,15 @@
+ from __future__ import annotations
+ 
+ import os
++
++from tensorrt_llm.logger import logger
+ import threading
+ 
+ import torch
+ import torch.distributed as dist
+ 
+ from .communication.collectives import Collectives
+-from .moe_layer import (
+-    B10KimiK3MoELayer,
+-    PREFILL_BASELINE_MAX_TOKENS,
+-)
++from .moe_layer import B10KimiK3MoELayer, DECODE_MAX_TOKENS
+ from .config import HIDDEN, MOE_LATENT
+ from tensorrt_llm._utils import mpi_rank, mpi_world_size
+ 
+@@ -46,6 +45,25 @@ def _serving_auto_map() -> list[dict]:
+         rows.append(
+             dict(op="all_reduce", dim=MOE_LATENT + HIDDEN, tokens=tokens, impl="trt", us=0.0)
+         )
++    # Decode-path ARs run at dim=HIDDEN and dim=MOE_LATENT, which the frozen
++    # map above never covered: pick() missed and fell back to torch_symm:2shot
++    # (measured 20-31 us vs trt's 6-15 us at these sizes -- the fallback cost
++    # +4.3 ms per 92-layer decode step, traced on GB300, 2026-08-21). Winners
++    # below are from communication/bench_comm_graph.py on the same node:
++    # trt through 32 tokens, b10_multimem from 64.
++    for dim in (HIDDEN, MOE_LATENT):
++        for tokens in (1, 2, 4, 8, 16, 32):
++            rows.append(dict(op="all_reduce", dim=dim, tokens=tokens,
++                             impl="trt", us=0.0))
++        for tokens in (64, 128, 256):
++            rows.append(dict(op="all_reduce", dim=dim, tokens=tokens,
++                             impl="b10_multimem", us=0.0))
++        # allreduce_norm: trt fused wins through 64 tokens on GB300
++        # (report_graph_allreduce_norm.csv, 2026-08-21); from 128 the
++        # unfused fallback with a tuned AR wins, so no row -> fallback.
++        for tokens in (1, 2, 4, 8, 16, 32, 64):
++            rows.append(dict(op="allreduce_norm", dim=dim, tokens=tokens,
++                             impl="trt", us=0.0))
+     rows.extend(
+         [
+             dict(
+@@ -115,14 +133,25 @@ def get_serving_collectives() -> Collectives:
+             enable_trt=True,
+             enable_b10=False,
+             lazy_autotune=False,
++            # Sized for the decode front's fused column-AG (+MXFP8):
++            # KIMI_B10_DECODE_MAX_BATCH rows of MOE_LATENT/world columns.
++            col_ag_max_rows=int(os.environ.get(
++                "KIMI_B10_DECODE_MAX_BATCH", str(DECODE_MAX_TOKENS))),
++            col_ag_max_output_columns=MOE_LATENT,
+         )
+         comm.import_auto_map(_serving_auto_map())
+-        from .communication.backends.b10_multimem_backend import \
+-            B10MultimemBackend
+-
+-        # Build eagerly so initialization failures are surfaced instead of
+-        # being swallowed by the optional-backend dispatcher.
+-        comm._mm_ar = B10MultimemBackend(comm.ctx)
++        # Eager multimem build, so *build* failures surface at init rather
++        # than in the dispatcher. Two caveats learned on GB300:
++        # * an arch-mismatched cubin does NOT fail here -- load_inline
++        #   succeeds and the first launch kills the context -- so this is a
++        #   convenience, not a safety net;
++        # * it must respect the comm fallback switch, or it re-installs the
++        #   exact transport KIMI_B10_COMM_FALLBACK exists to keep out.
++        if not comm._fallback:
++            from .communication.backends.b10_multimem_backend import \
++                B10MultimemBackend
++
++            comm._mm_ar = B10MultimemBackend(comm.ctx)
+         _RUNTIME_COLLECTIVES = comm
+         return comm
+ 
+@@ -140,22 +169,50 @@ class ServingB10KimiK3MoE(B10KimiK3MoELayer):
+     ) -> None:
+         mapping = model_config.mapping
+         config = model_config.pretrained_config
+-        if (
+-            mapping.tp_size != 8
+-            or mapping.moe_ep_size != 8
+-            or mapping.moe_tp_size != 1
+-            or mapping.pp_size != 1
+-            or mapping.is_multi_node()
+-            or mpi_world_size() != 8
+-            or mapping.enable_attention_dp
+-            or model_config.lora_config is not None
+-            or config.hidden_size != HIDDEN
+-            or config.moe_latent_size != MOE_LATENT
+-        ):
++        world = mapping.tp_size
++        # STRUCTURAL requirements only. The layer derives every shard width
++        # from the world size at runtime (moe_layer.py:312 MOE_LATENT //
++        # world, the fused front from the actual shard rows, the kernels
++        # compile per shape), so nothing below pins one TP degree; TP=8 was
++        # merely the only *measured* configuration. Experts must be
++        # EP-sharded with MoE-TP1 -- same as the baseline layer's plan --
++        # and the custom transports need one NVLink domain.
++        failed = [
++            name for name, bad in (
++                ("tp_size in (2, 4, 8)", world not in (2, 4, 8)),
++                # trtllm-gen FMHA tiles 16 query heads per CTA; a per-rank
++                # count neither <=16 nor a multiple of 16 dies later with
++                # "Internal error numHeadsQ=24, numHeadsPerCta=16"
++                # (96 heads at TP4). Fail here, named.
++                ("heads/rank tiles (<=16 or %16==0)",
++                 (96 // world) > 16 and (96 // world) % 16 != 0),
++                (f"moe_ep_size == tp_size ({world})",
++                 mapping.moe_ep_size != world),
++                ("moe_tp_size == 1", mapping.moe_tp_size != 1),
++                ("pp_size == 1", mapping.pp_size != 1),
++                ("single node", mapping.is_multi_node()),
++                (f"mpi world == tp_size ({world})",
++                 mpi_world_size() != world),
++                ("no attention-DP", mapping.enable_attention_dp),
++                ("no LoRA", model_config.lora_config is not None),
++                (f"hidden == {HIDDEN}", config.hidden_size != HIDDEN),
++                (f"moe_latent == {MOE_LATENT}",
++                 config.moe_latent_size != MOE_LATENT),
++                ("num_experts % world == 0",
++                 config.num_experts % world != 0),
++                ("latent % world == 0", MOE_LATENT % world != 0),
++            ) if bad
++        ]
++        if failed:
++            # Name the failing predicate: "requires TP8" cost two dead
++            # bring-up cycles when the actual miss was moe_ep_size.
+             raise RuntimeError(
+-                "B10 Kimi MoE requires single-node TP8/EP8/PP1, MoE-TP1, "
+-                "BF16 K3 hidden/latent dimensions, and no attention-DP or LoRA"
+-            )
++                "B10 Kimi MoE unsupported configuration; failed: "
++                + "; ".join(failed))
++        if world != 8 and mapping.rank == 0:
++            logger.warning(
++                f"[B10-KIMI-MOE] TP{world}: running the TP8-measured plan; "
++                "thresholds are correct but not retuned for this degree")
+         super().__init__(
+             model_config,
+             layer_idx,
+@@ -169,15 +226,22 @@ class ServingB10KimiK3MoE(B10KimiK3MoELayer):
+ 
+     def forward(self, hidden_states, attn_metadata=None, **kwargs):
+         if not self._optimized:
++            # Decode was historically disabled here (max_batch=0, "prefill
++            # only"), shunting every decode step to baseline and discarding
++            # the measured decode ladder (+35.6/+22.5/+17.1/+11.2% at
++            # B=1/8/32/64 on GB300 at checkpoint width). On by default now;
++            # KIMI_B10_DECODE_MAX_BATCH=0 restores prefill-only.
++            max_batch = int(os.environ.get(
++                "KIMI_B10_DECODE_MAX_BATCH", str(DECODE_MAX_TOKENS)))
++            if max_batch and self.mapping.rank == 0:
++                logger.info(f"[B10-KIMI-MOE] decode path enabled through "
++                            f"{max_batch} tokens")
+             self.init_optimized(
+-                max_batch=0,
++                max_batch=max_batch,
+                 collectives=get_serving_collectives(),
+             )
+-        tokens = hidden_states[0].numel() // HIDDEN if isinstance(
+-            hidden_states, tuple
+-        ) else hidden_states.numel() // HIDDEN
+-        if tokens <= PREFILL_BASELINE_MAX_TOKENS:
+-            return self.baseline_forward(hidden_states, attn_metadata, **kwargs)
++        # No shunt here: the layer dispatches decode vs prefill itself and
++        # baselines any batch beyond the initialized decode capacity.
+         return super().forward(hidden_states, attn_metadata, **kwargs)
+ 
+ 

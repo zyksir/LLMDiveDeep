@@ -41,17 +41,42 @@ _MODULE = None
 
 
 def load() -> None:
+    """Build/load the probe extension for THIS device's arch.
+
+    Two arch hazards, both of which bit on a GB300 (the module built for
+    sm_100a, loaded cleanly, then killed the CUDA context at its first launch
+    with "no kernel image is available" -- and because the caller only guards
+    load() in a try/except, that surfaced later as an unrelated failure in
+    torch.randn):
+
+    * the arch list has to come from the device, not a literal;
+    * ``cpp_extension`` keys its build directory on name + source hash and NOT
+      on the target arch, so the name has to carry the arch or a B200 build is
+      silently reused on a B300 -- that is what ``arch.ext_name`` is for.
+
+    ``TORCH_CUDA_ARCH_LIST`` is restored afterwards; leaving it set leaks this
+    module's target onto every later build in the process.
+    """
     global _MODULE
     if _MODULE is None:
         from torch.utils.cpp_extension import load as load_ext
 
-        os.environ["TORCH_CUDA_ARCH_LIST"] = "10.0a"
-        _MODULE = load_ext(
-            name="llmdd_fused_route_permute_v1",
-            sources=[str(Path(__file__).with_suffix(".cu"))],
-            extra_cuda_cflags=["-O3"],
-            verbose=False,
-        )
+        from common import arch
+
+        previous = os.environ.get("TORCH_CUDA_ARCH_LIST")
+        os.environ["TORCH_CUDA_ARCH_LIST"] = arch.torch_arch_list()
+        try:
+            _MODULE = load_ext(
+                name=arch.ext_name("llmdd_fused_route_permute_v1"),
+                sources=[str(Path(__file__).with_suffix(".cu"))],
+                extra_cuda_cflags=["-O3", *arch.nvcc_gencode()],
+                verbose=False,
+            )
+        finally:
+            if previous is None:
+                os.environ.pop("TORCH_CUDA_ARCH_LIST", None)
+            else:
+                os.environ["TORCH_CUDA_ARCH_LIST"] = previous
 
 
 def module():
