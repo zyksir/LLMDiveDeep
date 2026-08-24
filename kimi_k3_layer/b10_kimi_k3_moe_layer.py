@@ -418,19 +418,31 @@ class KimiK3MoEReference(TrtKimiK3MoE):
         if _w is None:
             import torch.distributed as _d
             _w = _d.get_world_size() if _d.is_initialized() else 1
-        if _w == 1:
-            # TP1: the fused MoE finalize op rejects tp_size=1 ("requires TP
-            # size 2, 4, 8, or 16"). Do the same math unfused so single-GPU
-            # runs (fast local iteration) work without a special harness.
+        # The fused finalize+AR kernel is unusable in two cases:
+        #  * TP1  -- the op rejects tp_size=1, and
+        #  * multi-node -- moefinalize_allreduce_fusion_kernel_oneshot_lamport
+        #    addresses peers through the single-node IPC workspace, so it
+        #    raises an illegal memory access across nodes (2026-08-24, TP8 on
+        #    2x GB300). MoEAllReduce.supports_finalize_rmsnorm_concat gates
+        #    only on tp_size, so we must check the topology here.
+        _fused_ok = _w > 1 and _w <= torch.cuda.device_count()
+        if not _fused_ok:
+            # Unfused equivalent: finalize scales -> AR (through pick(), so
+            # MNNVL/ncclSymm rather than plain NCCL) -> RMSNorm.
             routed_latent = torch.ops.trtllm.moe_finalize_scale_op(
                 fc2_output, None, expert_scale_factor, expanded_idx
             ) if hasattr(torch.ops.trtllm, "moe_finalize_scale_op") else (
                 fc2_output.view(-1, self.moe_hidden_size))
+            shared_red = shared.view(-1, self.hidden_dim)
+            if _w > 1:
+                comm = self._comm()
+                routed_latent = comm.all_reduce(
+                    routed_latent.view(-1, self.moe_hidden_size))
+                shared_red = comm.all_reduce(shared_red)
             routed_latent = torch.nn.functional.rms_norm(
                 routed_latent.view(-1, self.moe_hidden_size),
                 (self.moe_hidden_size,), self.latent_norm.weight,
                 self.latent_norm.variance_epsilon)
-            shared_red = shared.view(-1, self.hidden_dim)
         else:
             routed_latent, shared_red = (
             self._moe_allreduce.finalize_allreduce_rmsnorm_concat(
