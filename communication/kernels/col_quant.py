@@ -91,17 +91,16 @@ class OneShotComm:
             return
         self.data_off = 256
         self.slot_bytes = (max_bytes + 255) // 256 * 256
-        self.buf = symm_mem.empty(
-            self.data_off + 3 * self.slot_bytes, dtype=torch.uint8,
-            device=torch.device("cuda", torch.cuda.current_device()),
-        )
+        from .peer_alloc import alloc_peer_buffer
         group = group if group is not None else dist.group.WORLD
-        self.hdl = symm_mem.rendezvous(self.buf, group.group_name)
+        # NVL fabric memory when available: torch symm_mem is intra-node
+        # only in most builds (peer_alloc.py, K3_PEER_ALLOC).
+        self.buf, self.buf_ptrs, self._keepalive, self._alloc_kind = \
+            alloc_peer_buffer(group, rank, world,
+                              self.data_off + 3 * self.slot_bytes)
         self.buf[:self.data_off].zero_()
         # whole data region starts sentineled (bf16 -0.0)
         self.buf[self.data_off:].view(torch.int16).fill_(-32768)
-        self.buf_ptrs = torch.tensor(
-            self.hdl.buffer_ptrs, dtype=torch.int64, device="cuda")
         # per-CTA round counters (slot rotation for AG/RS)
         self.rounds = torch.zeros(grid, dtype=torch.int32, device="cuda")
         # per-CTA x per-slot record of vectors written (so the
@@ -171,7 +170,13 @@ class OneShotComm:
         )
 
     def reduce_scatter_cols(self, x: torch.Tensor) -> torch.Tensor:
-        """Column reduce-scatter: [B, C] partial sums on every rank ->
+        """RACE (2026-08-24, kernel-repros/rs_drift.py): interleaving
+        AG / AG-mxfp8 / RS-cols on one instance with a 2-6 ms per-rank
+        stagger corrupts 13/40 iterations -- every 3rd, locked to the
+        3-slot rotation; only the fast ranks see it. Needs a dedicated
+        instance (own rotation metadata) or a rotation fix before use.
+
+        Column reduce-scatter: [B, C] partial sums on every rank ->
         my [B, C/world] column slice of the total (world x less wire
         than an AR). Forked from FlashInfer's oneshot Lamport AR (same
         push/clear/batched-poll structure, one CTA per token).
@@ -233,16 +238,13 @@ class CeComm:
             return
         self.data_off = 256
         self.slot_bytes = (max_bytes + 255) // 256 * 256
-        self.buf = symm_mem.empty(
-            self.data_off + self.slot_bytes, dtype=torch.uint8,
-            device=torch.device("cuda", torch.cuda.current_device()),
-        )
+        from .peer_alloc import alloc_peer_buffer
         group = group if group is not None else dist.group.WORLD
-        self.hdl = symm_mem.rendezvous(self.buf, group.group_name)
+        self.buf, self.buf_ptrs, self._keepalive, self._alloc_kind = \
+            alloc_peer_buffer(group, rank, world,
+                              self.data_off + self.slot_bytes)
         self.buf[:self.data_off].zero_()  # arrival flags start at 0
-        self.ptrs = [int(p) for p in self.hdl.buffer_ptrs]
-        self.buf_ptrs = torch.tensor(
-            self.hdl.buffer_ptrs, dtype=torch.int64, device="cuda")
+        self.ptrs = [int(p) for p in self.buf_ptrs.tolist()]
         # host-side pointer table + C++ whole-collective fast path
         # (B10_CE_CPP=0 falls back to the Python reference loops)
         self._ptrs_cpu = torch.tensor(self.ptrs, dtype=torch.int64)

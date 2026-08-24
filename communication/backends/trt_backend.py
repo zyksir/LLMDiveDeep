@@ -45,8 +45,14 @@ class TrtBackend:
         )
         from tensorrt_llm.mapping import Mapping
         self.ctx = ctx
+        # gpus_per_node must be the REAL per-node GPU count: claiming
+        # world made can_access_peer() probe device ids that do not exist
+        # off the first node -> cudaErrorInvalidDevice at init on 2-node
+        # GB300 (verified 2026-08-24).
         self.mapping = Mapping(world_size=ctx.world, tp_size=ctx.world,
-                               rank=ctx.rank, gpus_per_node=ctx.world)
+                               rank=ctx.rank,
+                               gpus_per_node=min(ctx.world,
+                                                 torch.cuda.device_count()))
         self.tp_group = list(self.mapping.tp_group)
         self.workspace = get_allreduce_workspace(self.mapping)
         self._op = AllReduceFusionOp
