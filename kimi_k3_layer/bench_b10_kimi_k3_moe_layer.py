@@ -454,7 +454,10 @@ def main() -> None:
         "RANK", os.environ.get("OMPI_COMM_WORLD_RANK", "0")))
     world = int(os.environ.get(
         "WORLD_SIZE", os.environ.get("OMPI_COMM_WORLD_SIZE", "1")))
-    torch.cuda.set_device(rank)
+    # multi-node: the device index is the LOCAL rank
+    torch.cuda.set_device(int(os.environ.get(
+        "OMPI_COMM_WORLD_LOCAL_RANK",
+        os.environ.get("LOCAL_RANK", rank))) % torch.cuda.device_count())
     if world > 1:
         os.environ.setdefault("MASTER_ADDR", "127.0.0.1")
         os.environ.setdefault("MASTER_PORT", "29521")

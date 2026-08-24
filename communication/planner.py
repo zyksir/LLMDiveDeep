@@ -5,6 +5,8 @@ from __future__ import annotations
 import statistics
 from typing import Callable
 
+import os
+
 import torch
 import torch.distributed as dist
 
@@ -54,6 +56,19 @@ _CAPTURE_SWAP = {
 # autotuned communication plus separate compute kernels. ``norm_gemm_seq``
 # keeps the best fused AR+norm but launches GEMM separately, isolating the
 # benefit of the three-way AR+norm+GEMM fusion.
+# K3_DISABLE_IMPLS: comma-separated impl (or family) names to drop from every
+# candidate ladder, e.g. "torch_symm" removes torch_symm:1shot/2shot/multimem.
+# For bring-up on fabrics where an impl is unusable, without code edits.
+_DISABLED_IMPLS = tuple(
+    x.strip() for x in os.environ.get("K3_DISABLE_IMPLS", "").split(",") if x.strip()
+)
+
+
+def _enabled(impl: str) -> bool:
+    return not any(impl == d or impl.startswith(d + ":") or impl.split(":")[0] == d
+                   for d in _DISABLED_IMPLS)
+
+
 _OP_IMPLS: dict[str, tuple[str, ...]] = {
     "all_gather": ("torch_symm:multimem", "nccl_symm",
                    "torch_low_contention",
@@ -78,6 +93,11 @@ _OP_IMPLS: dict[str, tuple[str, ...]] = {
     "gemm_allreduce": ("seq",),
     "allreduce_norm_gemm": ("norm_gemm_seq", "seq"),
 }
+
+if _DISABLED_IMPLS:
+    _OP_IMPLS = {op: tuple(i for i in impls if _enabled(i)) or ("nccl",)
+                 for op, impls in _OP_IMPLS.items()}
+
 
 
 def _next_pow2(n: int) -> int:

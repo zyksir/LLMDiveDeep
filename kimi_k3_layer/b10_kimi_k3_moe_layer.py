@@ -71,6 +71,13 @@ from kimi_k3_layer.config import (
 
 SMALL_BATCH_MAX_TOKENS = 32
 
+# The bench baseline must match PRODUCTION stock (modeling_kimi_k3 with
+# TRTLLM_KIMI_B10_MOE=0), whose decode tail is the fused
+# finalize+AR+rmsnorm+concat kernel (f17ea3ab32) — the packed-AR reference
+# this bench originally used is ~21 us/layer slower at B=8 and overstated
+# every decode gain. K3_STOCK_BASELINE=0 restores the old reference.
+_STOCK_BASELINE = os.environ.get("K3_STOCK_BASELINE", "1") == "1"
+
 # Radix emits the trtllm-gen packed routing directly (one pack launch
 # replacing the bf16 copy + the op backend's eager lshift/or pair,
 # ~5.3 us/layer). K3_RADIX_PACKED=0 restores the unpacked handoff.
@@ -346,6 +353,154 @@ class KimiK3MoEReference(TrtKimiK3MoE):
             from communication.collective import Collectives
             self._collectives = Collectives(None, 0)
         return self._collectives
+
+    def _stock_epilogue_cap(self) -> int:
+        """Lazy MoEAllReduce + native op backend, sized exactly like
+        production (modeling_nemotron_h can_fuse_moe_epilogue path)."""
+        if getattr(self, "_moe_allreduce", None) is None:
+            from tensorrt_llm._torch.distributed.ops import MoEAllReduce
+            from tensorrt_llm._torch.modules.fused_moe.moe_op_backend import (
+                get_op_backend)
+            self._moe_allreduce = MoEAllReduce(self.mapping)
+            self._max_fused_moe_tokens = (
+                self._moe_allreduce.max_tokens_for_message(
+                    self.moe_hidden_size + self.hidden_dim,
+                    self.latent_norm.weight.dtype))
+        return self._max_fused_moe_tokens
+
+    def stock_forward(self, hidden_states: torch.Tensor,
+                      attn_metadata=None, **kwargs) -> torch.Tensor:
+        """The PRODUCTION decode path (modeling_kimi_k3 with
+        TRTLLM_KIMI_B10_MOE=0): experts with do_finalize=False on the
+        NATIVE op backend, then ONE fused finalize+AR+rmsnorm+concat
+        kernel, then fc2_latent_proj. Trace-aligned against
+        /node-storage/var/traces/trt-decode-stock-*. Beyond the fused
+        epilogue cap production falls back to the packed [latent|shared]
+        AR — which is exactly baseline_forward below."""
+        original_shape = hidden_states.shape
+        h = hidden_states.view(-1, self.hidden_dim)
+        if h.shape[0] > self._stock_epilogue_cap():
+            return self.baseline_forward(hidden_states, attn_metadata,
+                                         **kwargs)
+        all_rank_tokens = kwargs.get(
+            "all_rank_num_tokens",
+            getattr(attn_metadata, "all_rank_num_tokens", None),
+        )
+        # NOTE: no op-backend swap. Production stock also runs the
+        # FlashInfer op backend here (TRTLLMGenFusedMoE picks it whenever
+        # _check_flashinfer_backend_support passes — SiTU on sm_103 needs
+        # it; native trtllm-gen has no unfused-SiTU tile-8 kernel).
+
+        def routed_branch():
+            logits = _bench_doctor_logits(self.gate(h))
+            latent = self.fc1_latent_proj(h)
+            return self.experts(
+                latent,
+                logits,
+                all_rank_num_tokens=all_rank_tokens,
+                use_dp_padding=False,
+                do_finalize=False,
+            )
+
+        def shared_branch():
+            return self.shared_experts(h)
+
+        routed, shared = maybe_execute_in_parallel(
+            routed_branch,
+            shared_branch,
+            self.event_dict[EventType.Main],
+            self.event_dict[EventType.MoeShared],
+            self.aux_stream_shared,
+            disable_on_compile=True,
+        )
+        fc2_output, expert_scale_factor, expanded_idx = routed
+        _w = getattr(self, "_world", None)
+        if _w is None:
+            import torch.distributed as _d
+            _w = _d.get_world_size() if _d.is_initialized() else 1
+        if _w == 1:
+            # TP1: the fused MoE finalize op rejects tp_size=1 ("requires TP
+            # size 2, 4, 8, or 16"). Do the same math unfused so single-GPU
+            # runs (fast local iteration) work without a special harness.
+            routed_latent = torch.ops.trtllm.moe_finalize_scale_op(
+                fc2_output, None, expert_scale_factor, expanded_idx
+            ) if hasattr(torch.ops.trtllm, "moe_finalize_scale_op") else (
+                fc2_output.view(-1, self.moe_hidden_size))
+            routed_latent = torch.nn.functional.rms_norm(
+                routed_latent.view(-1, self.moe_hidden_size),
+                (self.moe_hidden_size,), self.latent_norm.weight,
+                self.latent_norm.variance_epsilon)
+            shared_red = shared.view(-1, self.hidden_dim)
+        else:
+            routed_latent, shared_red = (
+            self._moe_allreduce.finalize_allreduce_rmsnorm_concat(
+                fc2_output,
+                shared.view(-1, self.hidden_dim),
+                self.latent_norm.weight,
+                expanded_idx,
+                expert_scale_factor,
+                self.latent_norm.variance_epsilon,
+            ))
+        # BENCH-BASELINE FIX (2026-08-24): the trtllm Linear's cublasLt
+        # pick for fc2 in THIS harness is a 35.2 us NNT[112] variant while
+        # production serving runs a ~10-12 us splitK class (torch.matmul
+        # L2-cold: 11.0 us — same class). The Linear wrapper's bad pick
+        # inflated the stock baseline ~24 us/layer at bs8 and with it
+        # every layer-gain figure. Route through torch.matmul to match
+        # the REAL production cost. K3_BENCH_FC2_LINEAR=1 restores the
+        # old (inflated) baseline for table archaeology.
+        if os.environ.get("K3_BENCH_FC2_LINEAR", "0") == "1":
+            routed_out = self.fc2_latent_proj(
+                routed_latent.view(-1, self.moe_hidden_size))
+        else:
+            routed_out = torch.matmul(
+                routed_latent.view(-1, self.moe_hidden_size),
+                self.fc2_latent_proj.weight.t())
+        return (shared_red.view(-1, self.hidden_dim) + routed_out).view(
+            original_shape)
+
+    def baseline_forward(self, hidden_states: torch.Tensor,
+                         attn_metadata=None, **kwargs) -> torch.Tensor:
+        """The one reference path, also used by EXP all-off."""
+        original_shape = hidden_states.shape
+        h = hidden_states.view(-1, self.hidden_dim)
+        # K3_STOCK_BASELINE=1 (default): at decode sizes the production
+        # baseline is the fused finalize+AR epilogue, not the packed AR.
+        # =0 restores the pre-f17ea3ab32 reference for old-table compat.
+        if _STOCK_BASELINE and h.shape[0] <= self._stock_epilogue_cap():
+            return self.stock_forward(hidden_states, attn_metadata, **kwargs)
+        all_rank_tokens = kwargs.get(
+            "all_rank_num_tokens",
+            getattr(attn_metadata, "all_rank_num_tokens", None),
+        )
+
+        def routed_branch():
+            logits = self.gate(h)
+            latent = self.fc1_latent_proj(h)
+            return self.experts(
+                latent,
+                logits,
+                all_rank_num_tokens=all_rank_tokens,
+                use_dp_padding=False,
+            )
+
+        def shared_branch():
+            return self.shared_experts(h)
+
+        routed, shared = maybe_execute_in_parallel(
+            routed_branch,
+            shared_branch,
+            self.event_dict[EventType.Main],
+            self.event_dict[EventType.MoeShared],
+            self.aux_stream_shared,
+            disable_on_compile=True,
+        )
+        routed = routed.view(-1, self.moe_hidden_size)
+        packed = self._comm().all_reduce(torch.cat((routed, shared), dim=-1))
+        routed, shared = torch.split(
+            packed, (self.moe_hidden_size, self.hidden_dim), dim=-1)
+        return (shared + self.fc2_latent_proj(
+            self.latent_norm(routed))).view(original_shape)
 
     def forward(self, hidden_states: torch.Tensor, attn_metadata=None,
                 **kwargs) -> torch.Tensor:
