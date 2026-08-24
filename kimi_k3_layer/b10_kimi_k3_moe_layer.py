@@ -301,7 +301,7 @@ def k3_model_config(rank: int, world: int,
         world_size=world,
         tp_size=world,
         rank=rank,
-        gpus_per_node=world,
+        gpus_per_node=min(world, torch.cuda.device_count()),
         moe_ep_size=world,
         moe_tp_size=1,
     )

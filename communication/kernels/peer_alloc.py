@@ -195,8 +195,8 @@ def alloc_peer_buffer(group, rank: int, world: int, nbytes: int,
         try:
             from tensorrt_llm.mapping import Mapping
             mapping = Mapping(world_size=world, tp_size=world, rank=rank,
-                              gpus_per_node=int(os.environ.get(
-                                  "K3_GPUS_PER_NODE", str(world))))
+                              gpus_per_node=min(
+                                  world, torch.cuda.device_count()))
             buf, ptrs, keep = _alloc_ipc(mapping, nbytes)
             if sentinel_i16 is not None:
                 buf.fill_int16(sentinel_i16)

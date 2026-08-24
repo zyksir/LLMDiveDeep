@@ -49,7 +49,7 @@ def main() -> None:
     from tensorrt_llm._torch.distributed.ops import MoEAllReduce
 
     mapping = Mapping(world_size=world, tp_size=world, rank=rank,
-                      gpus_per_node=world)
+                      gpus_per_node=min(world, torch.cuda.device_count()))
     moe_ar = MoEAllReduce(mapping)
     comm = Collectives(dist.group.WORLD,
                        max_numel=max(SIZES) * (LATENT + HIDDEN),
