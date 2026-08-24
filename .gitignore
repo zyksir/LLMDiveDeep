@@ -6,3 +6,5 @@ __pycache__/
 *local_debug/
 *local_result/
 *kernel_research/
+# per-node measurement outputs — never committed
+**/local_results/

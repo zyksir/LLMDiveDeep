@@ -209,11 +209,23 @@ def _capture(fn, iterations: int, world: int, *, graphpatch: bool = False,
     if graphpatch:
         from kimi_k3_layer.kernels.routing_graphpatch import patch_graph
 
-        patched = patch_graph(graph)
+        from kimi_k3_layer.config import NUM_EXPERTS as _num_experts
+
+        patched = patch_graph(
+            graph, num_local_experts=_num_experts // max(world, 1))
         graph.instantiate()
         if rank == 0 and patched:
             print(f"  [graphpatch] {patched}/{iterations} routing-indices "
                   "nodes swapped", flush=True)
+        elif rank == 0:
+            # A silent no-op cost ~7 us/layer once (trt-k3, 2026-08-22);
+            # fingerprint the candidates so it can never hide again.
+            from kimi_k3_layer.kernels.routing_graphpatch import scan_graph
+            nodes = scan_graph(graph)
+            print(f"  [graphpatch] 0 nodes swapped — {len(nodes)} cluster "
+                  f"nodes found; first: "
+                  f"{ {k: v for k, v in nodes[0].items()} if nodes else None}",
+                  flush=True)
     if world > 1:
         dist.barrier()
     return graph
@@ -333,6 +345,21 @@ def _build_collectives(world: int, sizes, max_decode: int):
         col_ag_max_output_columns=MOE_LATENT,
         fused_ar_max_rows=max_decode,
     )
+    # Persist the tuned (op, dim, bucket) -> impl map across processes:
+    # with K3_AUTO_MAP_JSON set, the first process on this node profiles
+    # and exports; later ones import and skip straight to measuring.
+    # Keyed by world size — a TP4 map must never serve a TP8 run. Any
+    # cell the imported map misses is still lazily tuned (ensure_tuned).
+    map_base = os.environ.get("K3_AUTO_MAP_JSON", "")
+    map_path = f"{map_base}.w{world}.json" if map_base else ""
+    if map_path and os.path.exists(map_path):
+        import json
+        with open(map_path) as f:
+            collectives.import_auto_map(json.load(f))
+        if dist.get_rank() == 0:
+            print(f"[collectives.autotune] imported map from {map_path}",
+                  flush=True)
+        return collectives
     collectives.autotune(
         dims=(HIDDEN, MOE_LATENT, packed),
         max_tokens=min(max_tokens, 256),
@@ -352,6 +379,11 @@ def _build_collectives(world: int, sizes, max_decode: int):
             clear=False,
             log=(dist.get_rank() == 0),
         )
+    if map_path and dist.get_rank() == 0:
+        import json
+        with open(map_path, "w") as f:
+            json.dump(collectives.export_auto_map(), f, indent=1)
+        print(f"[collectives.autotune] exported map to {map_path}", flush=True)
     return collectives
 
 
@@ -431,7 +463,16 @@ def main() -> None:
     collectives = _build_collectives(world, sizes, max_decode)
     config = k3_model_config(rank, world)
     aux = {kind: torch.cuda.Stream() for kind in AuxStreamType}
-    layer = B10KimiK3MoELayer(
+    # K3_NEW_CLASS selects what the "new" label times: the full B10 layer
+    # (default), pure stock (sanity: new == baseline), or the stock-plus
+    # ladder (K3_FRONT_STAGES picks the pre-expert stages).
+    from kimi_k3_layer.b10_kimi_k3_moe_layer import (KimiK3StockMoE,
+                                                     KimiK3StockPlusFront)
+    _layer_cls = {
+        "stock": KimiK3StockMoE,
+        "stockplus": KimiK3StockPlusFront,
+    }.get(os.environ.get("K3_NEW_CLASS", ""), B10KimiK3MoELayer)
+    layer = _layer_cls(
         config,
         layer_idx=0,
         aux_stream_dict=aux,
@@ -457,10 +498,37 @@ def main() -> None:
 
         reference_box = {}
 
+        # Serving-aligned serialization: in production, layer k+1's input
+        # depends on layer k's output, so iterations never overlap. The
+        # bench's independent buffers let iteration k+1's side-stream work
+        # race into iteration k's lamport AR and inflate kernel times.
+        # K3_CHAIN_ITERS=1 (default) restores the dependency with a
+        # zero-weight residual: exact same values, real data edge.
+        _chain = os.environ.get("K3_CHAIN_ITERS", "1") == "1"
+
+        def _chained_input(index, box):
+            h = inputs[index]
+            prev = box.get("output")
+            if _chain and prev is not None and prev.shape == h.shape:
+                return torch.add(h, prev.view(h.shape), alpha=0.0)
+            return h
+
+        # K3_BENCH_SKEW_NS: rank-dependent busy-wait before each layer
+        # call, emulating serving's per-rank attention-time variance —
+        # the skew source single-layer benches otherwise lack (a path
+        # with 3 sync points pays skew up to 3x/layer, 1 sync pays 1x).
+        _skew_ns = int(os.environ.get("K3_BENCH_SKEW_NS", "0")) * rank
+
+        def _inject_skew():
+            if _skew_ns:
+                from communication.kernels.delay import delay_ns
+                delay_ns(_skew_ns)
+
         def reference_fn(index):
+            _inject_skew()
             with torch.no_grad():
                 reference_box["output"] = layer.baseline_forward(
-                    inputs[index])
+                    _chained_input(index, reference_box))
 
         reference_graph = _capture(reference_fn, iterations, world)
         reference_us = _time_graph(
@@ -512,8 +580,10 @@ def main() -> None:
             output_box = {}
 
             def layer_fn(index):
+                _inject_skew()
                 with torch.no_grad():
-                    output_box["output"] = layer(inputs[index])
+                    output_box["output"] = layer(
+                        _chained_input(index, output_box))
 
             active_config = exp_config or measured_config(tokens)
             uses_column_gather = (

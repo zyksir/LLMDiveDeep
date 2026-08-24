@@ -78,6 +78,18 @@ SiTUAndMul = _graft(
 ).SiTUAndMul
 
 SMALL_BATCH_MAX_TOKENS = 32
+
+# The bench baseline must match PRODUCTION stock (modeling_kimi_k3 with
+# TRTLLM_KIMI_B10_MOE=0), whose decode tail is the fused
+# finalize+AR+rmsnorm+concat kernel (f17ea3ab32) — the packed-AR reference
+# this bench originally used is ~21 us/layer slower at B=8 and overstated
+# every decode gain. K3_STOCK_BASELINE=0 restores the old reference.
+_STOCK_BASELINE = os.environ.get("K3_STOCK_BASELINE", "1") == "1"
+
+# Radix emits the trtllm-gen packed routing directly (one pack launch
+# replacing the bf16 copy + the op backend's eager lshift/or pair,
+# ~5.3 us/layer). K3_RADIX_PACKED=0 restores the unpacked handoff.
+_RADIX_PACKED = os.environ.get("K3_RADIX_PACKED", "1") == "1"
 DECODE_MAX_TOKENS = 128
 # 128 since the inter=3072 width fix (2026-08-21, GB300 TP8): at the
 # checkpoint expert width the decode plan LOSES at 256 (-0.7% vs
@@ -150,6 +162,21 @@ class DecodeTail(str, Enum):
     # it wherever full fc2 applies.
     SHARDED_FC2_OUTPUT_REDUCE = "sharded_fc2_output_reduce"
     FULL_FC2_MULTIMEM_SHARED_REDUCE = "full_fc2_multimem_shared_reduce"
+    # Production stock's tail (f17ea3ab32): experts with do_finalize=False,
+    # then ONE finalize+AR+rmsnorm+concat kernel, then full fc2_latent_proj.
+    # Added after the aligned-baseline ladder showed the packed-AR skeleton
+    # LOSES 11-21 us/layer to this tail at decode — the B10 front/routing
+    # wins should stack on top of it instead of replacing it.
+    FUSED_FINALIZE_AR = "fused_finalize_ar"
+    # Hybrid: fused finalize+AR, then SHARDED fc2 + output AR (shared added
+    # after — the fused op already reduced it). Two AR latencies like the
+    # sharded tail, but fused finalize; measures the ceiling reachable
+    # without a latent-only fused kernel (see communication/MOE_FINALIZE_AR.md).
+    FUSED_FINALIZE_AR_SHARDED_FC2 = "fused_finalize_ar_sharded_fc2"
+    # OUR fused latent-only finalize+AR+rmsnorm kernel
+    # (communication/kernels/finalize_ar_norm.py, PDL-launched) followed by
+    # the sharded fc2 + the output AR carrying shared+fc2 partials.
+    FUSED_FAN_SHARDED_FC2 = "fused_fan_sharded_fc2"
     PACKED_LATENT_SHARED_REDUCE = "packed_latent_shared_reduce"
 
 
@@ -409,11 +436,103 @@ class KimiK3MoEReference(NemotronHMOE):
             self._collectives = Collectives(None, 0)
         return self._collectives
 
+    def _stock_epilogue_cap(self) -> int:
+        """Lazy MoEAllReduce + native op backend, sized exactly like
+        production (modeling_nemotron_h can_fuse_moe_epilogue path)."""
+        if getattr(self, "_moe_allreduce", None) is None:
+            from tensorrt_llm._torch.distributed.ops import MoEAllReduce
+            from tensorrt_llm._torch.modules.fused_moe.moe_op_backend import (
+                get_op_backend)
+            self._moe_allreduce = MoEAllReduce(self.mapping)
+            self._max_fused_moe_tokens = (
+                self._moe_allreduce.max_tokens_for_message(
+                    self.moe_hidden_size + self.hidden_dim,
+                    self.latent_norm.weight.dtype))
+        return self._max_fused_moe_tokens
+
+    def stock_forward(self, hidden_states: torch.Tensor,
+                      attn_metadata=None, **kwargs) -> torch.Tensor:
+        """The PRODUCTION decode path (modeling_kimi_k3 with
+        TRTLLM_KIMI_B10_MOE=0): experts with do_finalize=False on the
+        NATIVE op backend, then ONE fused finalize+AR+rmsnorm+concat
+        kernel, then fc2_latent_proj. Trace-aligned against
+        /node-storage/var/traces/trt-decode-stock-*. Beyond the fused
+        epilogue cap production falls back to the packed [latent|shared]
+        AR — which is exactly baseline_forward below."""
+        original_shape = hidden_states.shape
+        h = hidden_states.view(-1, self.hidden_dim)
+        if h.shape[0] > self._stock_epilogue_cap():
+            return self.baseline_forward(hidden_states, attn_metadata,
+                                         **kwargs)
+        all_rank_tokens = kwargs.get(
+            "all_rank_num_tokens",
+            getattr(attn_metadata, "all_rank_num_tokens", None),
+        )
+        # NOTE: no op-backend swap. Production stock also runs the
+        # FlashInfer op backend here (TRTLLMGenFusedMoE picks it whenever
+        # _check_flashinfer_backend_support passes — SiTU on sm_103 needs
+        # it; native trtllm-gen has no unfused-SiTU tile-8 kernel).
+
+        def routed_branch():
+            logits = _bench_doctor_logits(self.gate(h))
+            latent = self.fc1_latent_proj(h)
+            return self.experts(
+                latent,
+                logits,
+                all_rank_num_tokens=all_rank_tokens,
+                use_dp_padding=False,
+                do_finalize=False,
+            )
+
+        def shared_branch():
+            return self.shared_experts(h)
+
+        routed, shared = maybe_execute_in_parallel(
+            routed_branch,
+            shared_branch,
+            self.event_dict[EventType.Main],
+            self.event_dict[EventType.MoeShared],
+            self.aux_stream_shared,
+            disable_on_compile=True,
+        )
+        fc2_output, expert_scale_factor, expanded_idx = routed
+        routed_latent, shared_red = (
+            self._moe_allreduce.finalize_allreduce_rmsnorm_concat(
+                fc2_output,
+                shared.view(-1, self.hidden_dim),
+                self.latent_norm.weight,
+                expanded_idx,
+                expert_scale_factor,
+                self.latent_norm.variance_epsilon,
+            ))
+        # BENCH-BASELINE FIX (2026-08-24): the trtllm Linear's cublasLt
+        # pick for fc2 in THIS harness is a 35.2 us NNT[112] variant while
+        # production serving runs a ~10-12 us splitK class (torch.matmul
+        # L2-cold: 11.0 us — same class). The Linear wrapper's bad pick
+        # inflated the stock baseline ~24 us/layer at bs8 and with it
+        # every layer-gain figure. Route through torch.matmul to match
+        # the REAL production cost. K3_BENCH_FC2_LINEAR=1 restores the
+        # old (inflated) baseline for table archaeology.
+        if os.environ.get("K3_BENCH_FC2_LINEAR", "0") == "1":
+            routed_out = self.fc2_latent_proj(
+                routed_latent.view(-1, self.moe_hidden_size))
+        else:
+            routed_out = torch.matmul(
+                routed_latent.view(-1, self.moe_hidden_size),
+                self.fc2_latent_proj.weight.t())
+        return (shared_red.view(-1, self.hidden_dim) + routed_out).view(
+            original_shape)
+
     def baseline_forward(self, hidden_states: torch.Tensor,
                          attn_metadata=None, **kwargs) -> torch.Tensor:
         """The one reference path, also used by EXP all-off."""
         original_shape = hidden_states.shape
         h = hidden_states.view(-1, self.hidden_dim)
+        # K3_STOCK_BASELINE=1 (default): at decode sizes the production
+        # baseline is the fused finalize+AR epilogue, not the packed AR.
+        # =0 restores the pre-f17ea3ab32 reference for old-table compat.
+        if _STOCK_BASELINE and h.shape[0] <= self._stock_epilogue_cap():
+            return self.stock_forward(hidden_states, attn_metadata, **kwargs)
         all_rank_tokens = kwargs.get(
             "all_rank_num_tokens",
             getattr(attn_metadata, "all_rank_num_tokens", None),
@@ -459,6 +578,36 @@ class _FrontResult:
     shard: torch.Tensor | None = None
     shared_gate_up: torch.Tensor | None = None
 
+
+
+def _bench_doctor_logits(logits: torch.Tensor) -> torch.Tensor:
+    """Bench-only routing realism hooks (both stock and B10 paths).
+
+    K3_DEBUG_CONC_ROUTING=1   collapse to the first TOP_K experts
+                              (dummy-weight serving's degenerate limit).
+    K3_BENCH_EXPERT_IMBALANCE=S  bias the experts owned by
+                              K3_BENCH_HEAVY_RANKS (default "5,6") by
+                              log(S): heavy ranks receive ~S x the
+                              routed load, reproducing the measured
+                              serving spread (bmm medians 7.2->15.2 us
+                              across ranks at S~2) with the skew INSIDE
+                              the expert stage where it belongs.
+    """
+    if os.environ.get("K3_DEBUG_CONC_ROUTING", "0") == "1":
+        logits = logits.clone()
+        logits[:, TOP_K:] = logits[:, TOP_K:] - 1e4
+        return logits
+    imb = float(os.environ.get("K3_BENCH_EXPERT_IMBALANCE", "0") or 0)
+    if imb > 1.0:
+        import math
+        world = int(os.environ.get("OMPI_COMM_WORLD_SIZE", "8"))
+        heavy = [int(r) for r in os.environ.get(
+            "K3_BENCH_HEAVY_RANKS", "5,6").split(",")]
+        e_local = NUM_EXPERTS // world
+        logits = logits.clone()
+        for r in heavy:
+            logits[:, r * e_local:(r + 1) * e_local] += math.log(imb)
+    return logits
 
 class B10KimiK3MoELayer(KimiK3MoEReference):
     """Measured B10 layer with immutable DEPLOY and explicit EXP modes."""
@@ -655,6 +804,7 @@ class B10KimiK3MoELayer(KimiK3MoEReference):
     # ---------------------------------------------------------- routing
 
     def _route(self, logits: torch.Tensor, routing: Routing):
+        logits = _bench_doctor_logits(logits)
         if routing is Routing.REFERENCE:
             ids, scales = self.experts.routing_method.apply(
                 logits.contiguous())
@@ -662,6 +812,11 @@ class B10KimiK3MoELayer(KimiK3MoEReference):
             # other routings emit bf16 natively via fmt="trtllm_gen").
             return ids, scales.to(torch.bfloat16)
         assert routing is Routing.RADIX, routing
+        if _RADIX_PACKED:
+            from kimi_k3_layer.kernels.routing import (
+                route_radix_packed_for_trtllm_gen)
+            return route_radix_packed_for_trtllm_gen(
+                logits, self._gate_bias_f32)
         return route_radix_for_trtllm_gen(logits, self._gate_bias_f32)
 
     # ----------------------------------------------------------- expert
@@ -676,7 +831,8 @@ class B10KimiK3MoELayer(KimiK3MoEReference):
 
     def _experts(self, latent, ids_scales,
                  backend: ExpertBackend = ExpertBackend.NATIVE,
-                 out: torch.Tensor | None = None):
+                 out: torch.Tensor | None = None,
+                 do_finalize: bool = True):
         if isinstance(latent, tuple):
             x, x_scale = latent
         elif backend is ExpertBackend.NATIVE:
@@ -695,9 +851,11 @@ class B10KimiK3MoELayer(KimiK3MoEReference):
         if backend is ExpertBackend.NATIVE:
             return self._with_native_backend(
                 lambda: self._gen_backend.run_moe(
-                    x, ids, scales, x_sf=x_scale, moe_output=out))
+                    x, ids, scales, x_sf=x_scale, moe_output=out,
+                    do_finalize=do_finalize))
         return self._gen_backend.run_moe(
-            x, ids, scales, x_sf=x_scale, moe_output=out)
+            x, ids, scales, x_sf=x_scale, moe_output=out,
+            do_finalize=do_finalize)
 
     # ----------------------------------------------------- shared branch
 
@@ -746,7 +904,8 @@ class B10KimiK3MoELayer(KimiK3MoEReference):
 
     # ------------------------------------------------------------- tail
 
-    def _tail(self, routed, shared_ref, tail: DecodeTail):
+    def _tail(self, routed, shared_ref, tail: DecodeTail,
+              fused_residual=None):
         comm = self._comm()
         if tail is DecodeTail.PACKED_LATENT_SHARED_REDUCE:
             shared = self._join_shared(shared_ref)
@@ -777,6 +936,15 @@ class B10KimiK3MoELayer(KimiK3MoEReference):
                 self._rank * self._latent_width,
                 (self._rank + 1) * self._latent_width)
             shared.addmm_(reduced[:, cols], self._fc2_shard_t)
+            if fused_residual is not None:
+                # Chain-bench overlap hook: the output AR carries the
+                # MoE residual add AND the next block's input norm in
+                # its fused epilogue (one kernel replaces AR->add->norm,
+                # and the residue work rides the AR's spin window).
+                resid, next_norm_w = fused_residual
+                normed, h_new = comm.allreduce_norm(
+                    shared, next_norm_w, RMS_EPS, residual=resid)
+                return normed, h_new
             return comm.all_reduce(shared)
         # The multimem tail retains the complete projection above B=16.
         # In-place accumulate: `shared` is always a private tensor here
@@ -810,7 +978,8 @@ class B10KimiK3MoELayer(KimiK3MoEReference):
         return comm.symm_input((tokens, HIDDEN), impl=pick, offset=offset)
 
     def _decode(self, hidden_states: torch.Tensor,
-                cfg: ExperimentConfig) -> torch.Tensor:
+                cfg: ExperimentConfig,
+                fused_residual=None) -> torch.Tensor:
         h = hidden_states.view(-1, self.hidden_dim)
         batch = h.shape[0]
         tail = cfg.decode_tail
@@ -870,11 +1039,64 @@ class B10KimiK3MoELayer(KimiK3MoEReference):
         # : 2") -- the hardcoded NATIVE default here was masked while the
         # bench baseline ran SwiGlu, and crashed the moment the baseline was
         # aligned with the checkpoint. capabilities.probe already knows.
-        routed = self._experts(
-            latent, ids_scales,
-            ExpertBackend.NATIVE if self._capabilities.native_experts
-            else ExpertBackend.FLASHINFER)
-        output = self._tail(routed, shared_ref, tail)
+        expert_backend = (ExpertBackend.NATIVE
+                          if self._capabilities.native_experts
+                          else ExpertBackend.FLASHINFER)
+        if tail is DecodeTail.FUSED_FAN_SHARDED_FC2:
+            if getattr(self, "_fan_engine", None) is None:
+                import torch.distributed as dist
+                from communication.kernels.finalize_ar_norm import (
+                    FinalizeARNorm)
+                self._fan_engine = FinalizeARNorm(
+                    dist.group.WORLD, self._rank, self._comm().world,
+                    max_tokens=DECODE_MAX_TOKENS,
+                    latent=self.moe_hidden_size)
+            fc2_out, scale_f, eidx = self._experts(
+                latent, ids_scales, expert_backend, do_finalize=False)
+            routed_normed = self._fan_engine(
+                fc2_out, eidx, scale_f.float(),
+                self.latent_norm.weight, self.latent_norm.variance_epsilon)
+            shared = self._join_shared(shared_ref).view(-1, self.hidden_dim)
+            cols = slice(self._rank * self._latent_width,
+                         (self._rank + 1) * self._latent_width)
+            shared = shared.addmm(routed_normed[:, cols], self._fc2_shard_t)
+            return self._comm().all_reduce(shared).view(hidden_states.shape)
+        if tail in (DecodeTail.FUSED_FINALIZE_AR,
+                    DecodeTail.FUSED_FINALIZE_AR_SHARDED_FC2):
+            # Production tail: unfinalized experts -> ONE fused
+            # finalize+AR+rmsnorm+concat kernel -> full fc2_latent_proj.
+            # Stacks the B10 front/routing/side-stream wins on top of the
+            # stock tail instead of replacing it with the packed AR.
+            if batch > self._stock_epilogue_cap():
+                raise RuntimeError(
+                    "FUSED_FINALIZE_AR tail beyond the fused-epilogue cap "
+                    f"({self._max_fused_moe_tokens} tokens)")
+            fc2_output, expert_scale_factor, expanded_idx = self._experts(
+                latent, ids_scales, expert_backend, do_finalize=False)
+            shared = self._join_shared(shared_ref).view(-1, self.hidden_dim)
+            routed_latent, shared_red = (
+                self._moe_allreduce.finalize_allreduce_rmsnorm_concat(
+                    fc2_output,
+                    shared,
+                    self.latent_norm.weight,
+                    expanded_idx,
+                    expert_scale_factor,
+                    self.latent_norm.variance_epsilon,
+                ))
+            routed_latent = routed_latent.view(-1, self.moe_hidden_size)
+            if tail is DecodeTail.FUSED_FINALIZE_AR_SHARDED_FC2:
+                cols = slice(self._rank * self._latent_width,
+                             (self._rank + 1) * self._latent_width)
+                partial = routed_latent[:, cols] @ self._fc2_shard_t
+                output = self._comm().all_reduce(partial) + shared_red
+            else:
+                output = shared_red + self.fc2_latent_proj(routed_latent)
+            return output.view(hidden_states.shape)
+        routed = self._experts(latent, ids_scales, expert_backend)
+        output = self._tail(routed, shared_ref, tail,
+                            fused_residual=fused_residual)
+        if fused_residual is not None:
+            return output  # (normed_next, residual_sum) tuple, unshaped
         return output.view(hidden_states.shape)
 
     # ----------------------------------------------------------- prefill
@@ -1044,10 +1266,178 @@ class B10KimiK3MoELayer(KimiK3MoEReference):
             return self.baseline_forward(
                 hidden_states, attn_metadata, **kwargs)
         if tokens <= min(DECODE_MAX_TOKENS, self._max_batch):
-            return self._decode(hidden_states, cfg)
+            return self._decode(
+                hidden_states, cfg,
+                fused_residual=kwargs.pop("_fused_residual", None))
         if cfg.prefill_fc1 is PrefillFC1.SHARDED:
             return self._prefill_sharded(hidden_states, cfg)
         return self._prefill_full(hidden_states, cfg)
+
+
+class KimiK3StockMoE(B10KimiK3MoELayer):
+    """Pure production baseline: forward IS the stock serving path
+    (experts do_finalize=False -> fused finalize+AR+rmsnorm+concat ->
+    full fc2_latent_proj), two streams, PDL tail overlap intact."""
+
+    def forward(self, hidden_states: torch.Tensor, attn_metadata=None,
+                **kwargs) -> torch.Tensor:
+        return self.stock_forward(hidden_states, attn_metadata, **kwargs)
+
+
+class KimiK3StockPlusFront(B10KimiK3MoELayer):
+    """Stock skeleton with ONLY pre-expert stages replaced, one at a time
+    (K3_FRONT_STAGES, comma list — empty = pure stock):
+
+      fc1_shard   per-rank fc1 column shard rebuilt by the fused
+                  col-AG+MXFP8 (replaces full fc1_latent_proj AND
+                  run_moe's internal activation quantize)
+      radix       radix routing feeding run_moe precomputed ids/scales
+                  (replaces the op's internal score-path routing)
+      fused_gate  dual-out GEMM [fc1-shard | shared g/u | gate] in one
+                  launch (implies fc1_shard; the shared branch consumes
+                  the precomputed gate/up)
+      fan_tail    replace the stock tail with our latent-only fused
+                  finalize+AR+rmsnorm (communication/kernels/
+                  finalize_ar_norm.py, data-encoded lamport v2) +
+                  sharded fc2 + one hidden AR
+
+    Without fan_tail, everything from the experts call onward is
+    byte-for-byte stock:
+    run_moe(do_finalize=False) -> ONE fused finalize+AR+rmsnorm+concat
+    kernel -> full fc2_latent_proj. Stream discipline is stock's
+    (main + shared aux; radix runs inline on main in this ladder)."""
+
+    _VALID_STAGES = frozenset(
+        {"fc1_shard", "radix", "fused_gate", "fan_tail", "mega_tail"})
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        stages = frozenset(
+            s for s in os.environ.get("K3_FRONT_STAGES", "").split(",") if s)
+        unknown = stages - self._VALID_STAGES
+        if unknown:
+            raise ValueError(
+                f"K3_FRONT_STAGES names unknown stage(s) {sorted(unknown)}; "
+                f"valid: {sorted(self._VALID_STAGES)}")
+        self._front_stages = stages
+        self._fused_front_cfg = None
+
+    def forward(self, hidden_states: torch.Tensor, attn_metadata=None,
+                **kwargs) -> torch.Tensor:
+        stages = self._front_stages
+        if not stages:
+            return self.stock_forward(hidden_states, attn_metadata, **kwargs)
+        original_shape = hidden_states.shape
+        h = hidden_states.view(-1, self.hidden_dim)
+        if h.shape[0] > self._stock_epilogue_cap():
+            # production's >cap path is the packed AR == baseline_forward
+            return self.baseline_forward(hidden_states, attn_metadata,
+                                         **kwargs)
+        all_rank_tokens = kwargs.get(
+            "all_rank_num_tokens",
+            getattr(attn_metadata, "all_rank_num_tokens", None),
+        )
+        del all_rank_tokens  # run_moe path is TP-only here, like the bench
+        use_fused_gate = "fused_gate" in stages
+        use_fc1_shard = use_fused_gate or "fc1_shard" in stages
+        use_radix = "radix" in stages
+
+        # The fused front must run BEFORE the shared fork: the shared
+        # branch consumes its precomputed gate/up rows.
+        front = None
+        if use_fused_gate:
+            if self._fused_front_cfg is None:
+                from types import SimpleNamespace
+                self._fused_front_cfg = SimpleNamespace(
+                    decode_front=DecodeFront.FUSED_FC1_SHARED_GATE_CUTE)
+            front = self._front(h, self._fused_front_cfg)
+
+        def routed_branch():
+            if front is not None:
+                logits = front.logits
+                latent = self._comm().all_gather_col_quant(front.shard)
+            else:
+                logits = self.gate(h)
+                if use_fc1_shard:
+                    latent = self._comm().all_gather_col_quant(
+                        h @ self._fc1_shard.T)
+                else:
+                    latent = self.fc1_latent_proj(h)
+            if isinstance(latent, tuple):
+                x, x_sf = latent
+                if x_sf is not None and x_sf.dim() == 1:
+                    x_sf = x_sf.view(x.shape[0], -1)
+            else:
+                x, x_sf = latent.contiguous(), None
+            if use_radix:
+                ids, scales = self._route(logits, Routing.RADIX)
+                return self._gen_backend.run_moe(
+                    x, ids, scales, x_sf=x_sf, do_finalize=False)
+            # run_moe's integrated routing reads logits as a dense tensor;
+            # the dual-out front hands back a strided view into its merged
+            # output (garbage routing without this — err 0.6 caught by the
+            # gate on 2026-08-22).
+            return self._gen_backend.run_moe(
+                x, None, None, x_sf=x_sf, router_logits=logits.contiguous(),
+                do_finalize=False)
+
+        def shared_branch():
+            if front is not None:
+                return self._shared_inline(h, gate_up=front.shared_gate_up)
+            return self.shared_experts(h)
+
+        routed, shared = maybe_execute_in_parallel(
+            routed_branch,
+            shared_branch,
+            self.event_dict[EventType.Main],
+            self.event_dict[EventType.MoeShared],
+            self.aux_stream_shared,
+            disable_on_compile=True,
+        )
+        fc2_output, expert_scale_factor, expanded_idx = routed
+        if "mega_tail" in stages:
+            if getattr(self, "_mega_engine", None) is None:
+                import torch.distributed as dist
+                from communication.kernels.mega_tail import MegaTail
+                self._mega_engine = MegaTail(
+                    dist.group.WORLD, self._rank, self._comm().world,
+                    max_tokens=DECODE_MAX_TOKENS,
+                    latent=self.moe_hidden_size, hidden=self.hidden_dim)
+            return self._mega_engine(
+                fc2_output, expanded_idx, expert_scale_factor.float(),
+                self.latent_norm.weight, shared.view(-1, self.hidden_dim),
+                self._fc2_shard_t, self._rank * self._latent_width,
+                self.latent_norm.variance_epsilon).view(original_shape)
+        if "fan_tail" in stages:
+            if getattr(self, "_fan_engine", None) is None:
+                import torch.distributed as dist
+                from communication.kernels.finalize_ar_norm import (
+                    FinalizeARNorm)
+                self._fan_engine = FinalizeARNorm(
+                    dist.group.WORLD, self._rank, self._comm().world,
+                    max_tokens=DECODE_MAX_TOKENS,
+                    latent=self.moe_hidden_size)
+            routed_normed = self._fan_engine(
+                fc2_output, expanded_idx, expert_scale_factor.float(),
+                self.latent_norm.weight, self.latent_norm.variance_epsilon)
+            shared = shared.view(-1, self.hidden_dim)
+            cols = slice(self._rank * self._latent_width,
+                         (self._rank + 1) * self._latent_width)
+            partial = shared.addmm(routed_normed[:, cols],
+                                   self._fc2_shard_t)
+            return self._comm().all_reduce(partial).view(original_shape)
+        routed_latent, shared_red = (
+            self._moe_allreduce.finalize_allreduce_rmsnorm_concat(
+                fc2_output,
+                shared.view(-1, self.hidden_dim),
+                self.latent_norm.weight,
+                expanded_idx,
+                expert_scale_factor,
+                self.latent_norm.variance_epsilon,
+            ))
+        output = shared_red + self.fc2_latent_proj(
+            routed_latent.view(-1, self.moe_hidden_size))
+        return output.view(original_shape)
 
 
 # Short aliases for callers migrating from the old benchmark.

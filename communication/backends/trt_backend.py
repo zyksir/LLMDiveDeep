@@ -17,10 +17,17 @@ NVFP4-quantized operands).
 from __future__ import annotations
 
 import importlib.util
+import os
 
 import torch
 
 from ..context import Ctx
+
+# Measured 2026-08-22: early trigger (=0) REGRESSED the full layer
+# ~10-20 us/iter — the deferred lamport cleanup lands on later ARs and
+# no torch-launched follower exploits the early window. Keep =1 until
+# the followers are PDL-launched kernels.
+_TRIGGER_AT_END = os.environ.get("K3_TRT_AR_TRIGGER_AT_END", "1") == "1"
 
 
 def available() -> bool:
@@ -48,10 +55,16 @@ class TrtBackend:
     def _call(self, x, residual, gamma, eps: float) -> list:
         fusion = (self._op.RESIDUAL_RMS_NORM if residual is not None
                   else self._op.NONE)
+        # trigger_completion_at_end=False = the PDL early trigger the
+        # stock fused tail uses: the AR signals launch-completion while
+        # its lamport spin runs, so the NEXT PDL-launched kernel on this
+        # stream overlaps the wait (flashinfer-backend kernels already
+        # launch_with_pdl). K3_TRT_AR_TRIGGER_AT_END=1 restores the
+        # conservative behaviour.
         return torch.ops.trtllm.allreduce(
             x, residual, gamma, None, None, self.workspace,
             self.tp_group, int(self._strategy.MIN_LATENCY),
-            int(fusion), eps, True)
+            int(fusion), eps, _TRIGGER_AT_END)
 
     def all_reduce(self, x: torch.Tensor) -> torch.Tensor:
         return self._call(x, None, None, 1e-5)[0]

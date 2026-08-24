@@ -83,7 +83,8 @@ def load() -> None:
             csrc,
             csrc / "nv_internal",
             csrc / "nv_internal" / "include",
-            jit_env.FLASHINFER_CUBIN_DIR,  # trtllmGen_bmm_export headers (symlinked)
+            jit_env.FLASHINFER_CUBIN_DIR,  # trtllmGen_bmm_export headers (symlinked, <=0.6.15)
+            jit_env.FLASHINFER_GEN_SRC_DIR,  # 0.6.18+: moe_utils symlinks the headers here
         ],
     )
     PROVENANCE["flashinfer_version"] = flashinfer.__version__

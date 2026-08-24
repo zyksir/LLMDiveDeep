@@ -279,6 +279,33 @@ def route_radix_for_trtllm_gen(
     return ids, weights.to(torch.bfloat16)
 
 
+@triton.jit
+def _radix_pack_kernel(ids_ptr, w_ptr, packed_ptr, n, BLOCK: tl.constexpr):
+    off = tl.program_id(0) * BLOCK + tl.arange(0, BLOCK)
+    m = off < n
+    ids = tl.load(ids_ptr + off, mask=m, other=0)
+    wb = (tl.load(w_ptr + off, mask=m, other=0.0)
+          .to(tl.bfloat16).to(tl.uint16, bitcast=True).to(tl.int32))
+    tl.store(packed_ptr + off, (ids << 16) | wb, mask=m)
+
+
+def route_radix_packed_for_trtllm_gen(
+    logits: torch.Tensor, gate_bias_f32: torch.Tensor
+) -> tuple[torch.Tensor, None]:
+    """Radix routing emitting the trtllm-gen ROUTED packed format
+    ((expert<<16)|bf16(w)) directly: ONE pack launch replacing the
+    bf16-cast copy here plus moe_op_backend's eager lshift+or pair
+    (~5.3 us/layer of stray elementwise kernels, audited 2026-08-22).
+    Pass (packed, None) to run_moe — the op backend's pre-packed fast
+    path consumes it."""
+    ids, weights = _route_radix(logits, gate_bias_f32)
+    n = ids.numel()
+    packed = torch.empty_like(ids, dtype=torch.int32)
+    _radix_pack_kernel[((n + 1023) // 1024,)](
+        ids, weights, packed, n, BLOCK=1024)
+    return packed, None
+
+
 def unpack_ids(packed: torch.Tensor) -> torch.Tensor:
     """Expert indices from the trtllm-gen packed (id<<16)|w format."""
     return packed >> 16

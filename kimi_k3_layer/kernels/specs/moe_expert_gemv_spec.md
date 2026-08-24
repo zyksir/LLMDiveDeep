@@ -30,3 +30,29 @@ Both exit 0 on success.
 ## ===== Canonical result line (mandatory) =====
 Both `--check` and `--bench` must additionally print one final line:
 `RESULT: {"correct": <bool>, "kernel_ms": <float>, "tflops": null, "gbps": <float>, "bound": "memory", "speedup": <float>}`
+
+## VERDICT (2026-08-23, GB300 EP8): REFUTED BY ROOFLINE for this deployment
+
+This spec targets the B200 **TP-sharded** expert shape (I=384 → 2.06
+MB/expert, roofline 8-10 µs). Kimi-K3 on GB300 serves **EP8 with full
+experts**: I=3072, K=3584 → per-expert W4 bytes = W13 11.0 MB + 0.69 MB
+sf + W2 5.5 MB + 0.34 MB sf = **17.5 MB/expert**.
+
+At decode bs8×top16 = 128 global pairs → E[local pairs/rank] = 16,
+distinct experts ≈ 15 → **~263 MB of weights streamed per rank per
+step**. At GB300's ~6.5-7 TB/s effective HBM bandwidth the floor is
+38-40 µs. The production trtllm-gen bmm pair measures 44.9 µs at bs8
+with uniform routing — **85-89% of the memory roofline**. No GEMV-style
+kernel can beat streaming those bytes, and resharding does not help:
+TP-sharding the experts makes every rank compute all 128 pairs at I/8 —
+128 × 2.06 MB = the same 264 MB/rank. The bytes are invariant.
+
+The only true levers on the expert stage are (a) fewer weight bytes
+(already FP4) and (b) cross-token expert reuse in L2 (negligible at
+decode batch ≤16, already exploited by grouped GEMM at large batch).
+The artifact's earlier claim that the expert GEMM is "the only lever
+past ~15%" stands in the OPPOSITE sense: it is a wall, not a lever.
+Remaining decode headroom lives in launch gaps and kernel-count
+reduction (tail fusion, front fusion, MLA o_proj+AR) — ~20 µs/layer of
+inter-kernel gap measured at bs8 (wall 131 µs/layer vs ~110 µs kernel
+sum).

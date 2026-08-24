@@ -57,6 +57,13 @@ _CUDA_SRC = r"""
 // MaxNumExperts, MaxNumTopExperts, ExpertSelectPolicy> - fields up to mTopK.
 // Layout is verified empirically via scan() fingerprints before use.
 // ---------------------------------------------------------------------------
+// Matches flashinfer 0.6.18rc1's RoutingKernel.h KernelParamsBase + the
+// routingCustom KernelParams prefix. The 2026-08-22 silent no-op was this
+// mirror drifting behind (four shared-expert scalars + mPtrRoutingReplayOut
+// were inserted before the derived members, and mTopK became IntFastDiv);
+// every field past mNumLocalExperts read garbage and the patch skipped all
+// nodes as "score path". The fingerprint TORCH_CHECKs below abort loudly on
+// the next drift instead of silently no-op'ing.
 struct ParamsMirror
 {
     bool mUsePdl;
@@ -79,8 +86,15 @@ struct ParamsMirror
     int32_t mLocalExpertsStartIdx;
     int32_t mLocalExpertsStrideLog2;
     int32_t mNumLocalExperts;
-    void* mPtrTopKPacked;
+    int32_t mNumFusedSharedExperts;
+    int32_t mSharedExpertTokenOffset;
+    int32_t mSharedExpertNumTokens;
+    int32_t mTotalExpertsPerToken;
+    int16_t* mPtrRoutingReplayOut;
+    // ---- ExpertSelectPolicy KernelParams (derived; RoutingKernel.h:353) ----
+    void* mPtrTopKPacked;  // PackedScoreIdx<bf16>: low16 = score bits, high16 = idx
     int32_t mTopK;
+    // trailing ExpertSelectParams not mirrored (never read)
 };
 
 // ---------------------------------------------------------------------------
@@ -90,11 +104,14 @@ struct ParamsMirror
 #define NUM_THREADS 1024
 // numTokens <= 128, topK = 16 -> expandedIdxSize <= 2048 -> 2 items/thread
 #define MAX_ITEMS 2
-// numLocalExperts <= 128 (Kimi-K3: 112)
-#define MAX_LOCAL_EXPERTS 128
+// numLocalExperts <= 256 (Kimi-K3: 112 at TP8, 224 at TP4; TP2's 448
+// exceeds the single-CTA histogram and is skipped python-side)
+#define MAX_LOCAL_EXPERTS 256
 
 __global__ void __launch_bounds__(NUM_THREADS) routingIndicesSmallBKernel(
     int32_t const* __restrict__ topKIds,
+    int32_t idsArePacked,  // PackedScoreIdx: expert id in the high 16 bits
+    uint16_t* __restrict__ topKWeightsOut,  // packed input: unpack bf16 bits
     int32_t numTokens, int32_t topK,
     int32_t localExpertsStart,
     int32_t numLocalExperts,
@@ -135,7 +152,15 @@ __global__ void __launch_bounds__(NUM_THREADS) routingIndicesSmallBKernel(
         int const idx = tid + ii * NUM_THREADS;
         if (idx < expandedIdxSize)
         {
-            int const le = topKIds[idx] - localExpertsStart;
+            int const raw = topKIds[idx];
+            if (idsArePacked && topKWeightsOut != nullptr)
+            {
+                // The cluster kernel unpacks bf16 weight bits from the
+                // packed struct for downstream finalize; replicate it.
+                topKWeightsOut[idx] = static_cast<uint16_t>(raw & 0xFFFF);
+            }
+            int const le = (idsArePacked ? (raw >> 16) : raw)
+                - localExpertsStart;
             if (le >= 0 && le < numLocalExperts)
             {
                 locE[ii] = le;
@@ -444,7 +469,7 @@ int64_t patch(int64_t graphHandle, int64_t expNumExperts, int64_t expTopK,
     for (auto node : clusterNodes(graph))
     {
         ParamsMirror const m = readParams(node);
-        if (m.mPtrTopKIds == nullptr)
+        if (m.mPtrTopKIds == nullptr && m.mPtrTopKPacked == nullptr)
         {
             continue; // score-path routing (e.g. baseline) - leave untouched
         }
@@ -504,6 +529,14 @@ int64_t patch(int64_t graphHandle, int64_t expNumExperts, int64_t expTopK,
         // Build replacement node. Argument values are copied by
         // cudaGraphAddKernelNode, so stack temporaries are fine.
         int32_t const* topKIds = m.mPtrTopKIds;
+        int32_t idsArePacked = 0;
+        if (topKIds == nullptr)
+        {
+            topKIds = reinterpret_cast<int32_t const*>(m.mPtrTopKPacked);
+            idsArePacked = 1;
+        }
+        uint16_t* weightsOut = (idsArePacked
+            ? reinterpret_cast<uint16_t*>(m.mPtrTopKWeights) : nullptr);
         int32_t numTokens = m.mNumTokens;
         int32_t topK = m.mTopK;
         int32_t start = m.mLocalExpertsStartIdx;
@@ -515,7 +548,7 @@ int64_t patch(int64_t graphHandle, int64_t expNumExperts, int64_t expTopK,
         int32_t* numCtas = m.mPtrNumNonExitingCtas;
         int32_t* e2p = m.mPtrExpandedIdxToPermutedIdx;
         int32_t* p2t = m.mPtrPermutedIdxToTokenIdx;
-        void* args[] = {&topKIds, &numTokens, &topK, &start, &numLocal, &tileDim,
+        void* args[] = {&topKIds, &idsArePacked, &weightsOut, &numTokens, &topK, &start, &numLocal, &tileDim,
             &batchIdx, &mnLimit, &permSize, &numCtas, &e2p, &p2t};
 
         cudaKernelNodeParams np{};
@@ -684,7 +717,14 @@ def patch_graph(
 ) -> int:
     """Replace every precomputed-ids routingIndicesClusterKernel node with the
     single-CTA small-batch kernel. Call between capture end and
-    ``graph.instantiate()``. Returns the number of nodes patched."""
+    ``graph.instantiate()``. Returns the number of nodes patched.
+
+    num_local_experts is TP-degree dependent (896/tp) — pass it, never rely
+    on the TP8 default (the hardcoded 112 asserted at TP4 with 224). Degrees
+    whose local-expert count exceeds the kernel's histogram (TP2: 448 > 256)
+    are skipped gracefully: the cluster kernel stays in the graph."""
+    if num_local_experts > 256:
+        return 0
     return _module().patch(
         graph.raw_cuda_graph(), num_experts, top_k, num_local_experts, max_tokens
     )
