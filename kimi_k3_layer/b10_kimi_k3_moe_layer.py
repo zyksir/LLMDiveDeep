@@ -391,6 +391,17 @@ class KimiK3MoEReference(TrtKimiK3MoE):
         # _check_flashinfer_backend_support passes — SiTU on sm_103 needs
         # it; native trtllm-gen has no unfused-SiTU tile-8 kernel).
 
+        # The fused finalize+AR kernel is unusable at TP1 (the op rejects
+        # tp_size=1) and across nodes (its Lamport peer addressing lives in
+        # the single-node IPC workspace -> illegal memory access; verified
+        # TP8 on 2x GB300, moeAllReduceFusionKernels.cu:1013). In those cases
+        # let the experts module finalize itself and reduce separately.
+        _w = getattr(self, "_world", None)
+        if _w is None:
+            import torch.distributed as _d
+            _w = _d.get_world_size() if _d.is_initialized() else 1
+        _fused_ok = 1 < _w <= torch.cuda.device_count()
+
         def routed_branch():
             logits = _bench_doctor_logits(self.gate(h))
             latent = self.fc1_latent_proj(h)
@@ -399,7 +410,7 @@ class KimiK3MoEReference(TrtKimiK3MoE):
                 logits,
                 all_rank_num_tokens=all_rank_tokens,
                 use_dp_padding=False,
-                do_finalize=False,
+                do_finalize=not _fused_ok,
             )
 
         def shared_branch():
@@ -413,46 +424,31 @@ class KimiK3MoEReference(TrtKimiK3MoE):
             self.aux_stream_shared,
             disable_on_compile=True,
         )
-        fc2_output, expert_scale_factor, expanded_idx = routed
-        _w = getattr(self, "_world", None)
-        if _w is None:
-            import torch.distributed as _d
-            _w = _d.get_world_size() if _d.is_initialized() else 1
-        # The fused finalize+AR kernel is unusable in two cases:
-        #  * TP1  -- the op rejects tp_size=1, and
-        #  * multi-node -- moefinalize_allreduce_fusion_kernel_oneshot_lamport
-        #    addresses peers through the single-node IPC workspace, so it
-        #    raises an illegal memory access across nodes (2026-08-24, TP8 on
-        #    2x GB300). MoEAllReduce.supports_finalize_rmsnorm_concat gates
-        #    only on tp_size, so we must check the topology here.
-        _fused_ok = _w > 1 and _w <= torch.cuda.device_count()
         if not _fused_ok:
-            # Unfused equivalent: finalize scales -> AR (through pick(), so
-            # MNNVL/ncclSymm rather than plain NCCL) -> RMSNorm.
-            routed_latent = torch.ops.trtllm.moe_finalize_scale_op(
-                fc2_output, None, expert_scale_factor, expanded_idx
-            ) if hasattr(torch.ops.trtllm, "moe_finalize_scale_op") else (
-                fc2_output.view(-1, self.moe_hidden_size))
+            # experts already finalized (do_finalize=True): reduce over TP
+            # through pick() (MNNVL/ncclSymm, never plain NCCL), then norm.
+            routed_latent = routed if not isinstance(routed, tuple) else routed[0]
+            routed_latent = routed_latent.view(-1, self.moe_hidden_size)
             shared_red = shared.view(-1, self.hidden_dim)
             if _w > 1:
                 comm = self._comm()
-                routed_latent = comm.all_reduce(
-                    routed_latent.view(-1, self.moe_hidden_size))
+                routed_latent = comm.all_reduce(routed_latent)
                 shared_red = comm.all_reduce(shared_red)
             routed_latent = torch.nn.functional.rms_norm(
-                routed_latent.view(-1, self.moe_hidden_size),
-                (self.moe_hidden_size,), self.latent_norm.weight,
+                routed_latent, (self.moe_hidden_size,),
+                self.latent_norm.weight,
                 self.latent_norm.variance_epsilon)
         else:
+            fc2_output, expert_scale_factor, expanded_idx = routed
             routed_latent, shared_red = (
-            self._moe_allreduce.finalize_allreduce_rmsnorm_concat(
-                fc2_output,
-                shared.view(-1, self.hidden_dim),
-                self.latent_norm.weight,
-                expanded_idx,
-                expert_scale_factor,
-                self.latent_norm.variance_epsilon,
-            ))
+                self._moe_allreduce.finalize_allreduce_rmsnorm_concat(
+                    fc2_output,
+                    shared.view(-1, self.hidden_dim),
+                    self.latent_norm.weight,
+                    expanded_idx,
+                    expert_scale_factor,
+                    self.latent_norm.variance_epsilon,
+                ))
         # BENCH-BASELINE FIX (2026-08-24): the trtllm Linear's cublasLt
         # pick for fc2 in THIS harness is a 35.2 us NNT[112] variant while
         # production serving runs a ~10-12 us splitK class (torch.matmul
