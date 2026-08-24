@@ -59,7 +59,7 @@ def main() -> None:
     os.environ.setdefault("MASTER_PORT", "29556")
     dist.init_process_group("cpu:gloo,cuda:nccl", rank=rank,
                             world_size=world,
-                            device_id=torch.device("cuda", rank))
+                            device_id=torch.device("cuda", torch.cuda.current_device()))
 
     from tensorrt_llm._torch.utils import AuxStreamType
     from kimi_k3_layer.bench_b10_kimi_k3_moe_layer import (

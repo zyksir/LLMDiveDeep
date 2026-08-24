@@ -838,7 +838,7 @@ def main() -> None:
         "cpu:gloo,cuda:nccl",
         rank=rank,
         world_size=world,
-        device_id=torch.device("cuda", rank),
+        device_id=torch.device("cuda", torch.cuda.current_device()),
     )
     assert world >= 2, "need multi-rank"
 

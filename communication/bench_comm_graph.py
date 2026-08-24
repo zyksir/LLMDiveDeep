@@ -113,7 +113,7 @@ def main() -> None:
     os.environ.setdefault("WORLD_SIZE", str(world))
     dist.init_process_group(
         "cpu:gloo,cuda:nccl", rank=rank, world_size=world,
-        device_id=torch.device("cuda", rank),
+        device_id=torch.device("cuda", torch.cuda.current_device()),
     )
     ops = [OP_NAMES[o] for o in args.ops.split(",")]
     bs_list = parse_bs(args.bs)

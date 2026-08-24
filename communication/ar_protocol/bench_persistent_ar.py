@@ -31,7 +31,7 @@ def main() -> None:
     os.environ.setdefault("MASTER_PORT", "29553")
     dist.init_process_group("cpu:gloo,cuda:nccl", rank=rank,
                             world_size=world,
-                            device_id=torch.device("cuda", rank))
+                            device_id=torch.device("cuda", torch.cuda.current_device()))
     eng = PersistentAR(dist.group.WORLD, rank, world, max_tokens=B, dim=DIM)
     gen = torch.Generator(device="cuda").manual_seed(3 + rank)
     src = torch.randn(B, DIM, generator=gen, device="cuda").bfloat16()

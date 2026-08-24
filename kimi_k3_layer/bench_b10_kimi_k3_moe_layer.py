@@ -465,7 +465,7 @@ def main() -> None:
             "cpu:gloo,cuda:nccl",
             rank=rank,
             world_size=world,
-            device_id=torch.device("cuda", rank),
+            device_id=torch.device("cuda", torch.cuda.current_device()),
         )
 
     # 128-row floor: prefill-only size lists must still construct the
