@@ -1,5 +1,110 @@
 # Journal
 
+## 2026-08-27 — round-3 finalization: single config, Triton gate PASS 18/18
+
+- User acceptance update applied: one configuration for every shape, Triton
+  gate hard, SOL gate best-effort with plateau evidence.
+- Sweep 6 (FP32 ring) closed the campaign: at group-span 4 the FP32 ring is
+  the new best on every long shape (dense B8 0.0286→0.0268/0.0278 ms; strided
+  long 0.0408→0.0399/0.0401 ms); at span 8 it regresses via register
+  pressure. `v4_tile16_gs4_fr` chosen as the single config — worst-case +3.7%
+  vs per-shape best, all other shapes within ~2.3%.
+- Selected config made the backend default (env unset): stream W4, vec 4,
+  128 threads, tile 16, group loads span 4, FP32 ring, tanh SiLU, BF16 param
+  fragments (bitwise-identical), FP32 accumulation. W2/W3 keep the direct
+  kernel.
+- Final gates: case correctness 17/17, full matrix 108/108 (states bitwise);
+  five-round main benchmark PASS 18/18 vs unchanged git-HEAD Triton,
+  1.774–3.949x, worst margin 77% (no <5% rerun triggered). Receipt:
+  `results/r3_acceptance_summary.json`.
+- Final NCU (selected + Triton strided): dense long 24.5–25.2 µs (47.6–48.1%
+  compute, 31.0–31.8% DRAM SOL, 72 regs); strided long 33.9–34.4 µs
+  (53.4–54.4% compute, 41.8–42.6% DRAM SOL, 64 regs). FP32 ring cut ALU pipe
+  64–66%→37–39% and cycles/issue 14.2→10.3–11.5; residual is long-scoreboard
+  (DRAM latency) at ~52% of cycles under register-bound occupancy. No
+  counter-indicated mechanism remains inside the SIMT architecture;
+  exploration stopped per the acceptance update.
+- SOL vs calibrated roofs: 52% dense D3072 long, 60–61% dense D1536 long,
+  ~65% strided production long, 31–40% launch-floor-bound short/medium.
+- REPORT/README/ledger rewritten to the round-3 framing; `r3_final_inner.sh`
+  and `build_r3_acceptance.py` added for reproduction.
+
+## 2026-08-27 — round-3 mechanism campaign
+
+- Calibrated attainable roofs with same-pattern streaming copies
+  (`calibrate_roof.py`): contiguous T8192/D3072 attains 6957 GB/s (1 GiB roof
+  was loose in the tight direction), strided production 5845 GB/s (partial
+  128 B lines at row edges), short/medium payloads launch/ramp bound.
+- Kimi-K3 production strided shape (D=4608, stride(0)=4752, no bias) added as
+  first-class gate rows; harness generates true strided views; wrapper
+  derives alignment/vector width from real pointers (rows are 32B- but not
+  128B-aligned).
+- GPU lease unblocked per user authorization: runs pinned to GPU 7 (0%
+  utilization, co-resident idle memory), 1500 MHz lock kept, utilization
+  verified before each run.
+- Mechanisms confirmed: tanh SiLU (-16–25%), group-batched loads (-18–19%,
+  the largest win; long-scoreboard share fell as predicted), FP32 ring at
+  span 4 (-3–6%). Refuted: vec8/16 in the conv kernel, L2 prefetch hints,
+  span 12, 256 threads, FP32 params (bitwise-identical, perf-neutral).
+- Precision audit (`precision_audit.py`): FP32 accumulation everywhere; BF16
+  param fragments bitwise-identical to FP32 fragments; config choices
+  bitwise-invariant; tanh-vs-native worst max-abs 3.13e-2 within the frozen
+  BF16 atol 1e-1 (expdiv 1.95e-3); states bitwise in both modes. tanh
+  selected for speed with the delta documented; expdiv remains selectable.
+
+## 2026-08-27 — second-round result
+
+- The width-4 streaming ring reduced redundant input-row loads. Controlled
+  vector/CTA/tile sweeps selected 128 threads and eventually 12-token chunks.
+- Early long B1 NCU moved from 84 to 55 registers and 31.25% to 56.25%
+  theoretical occupancy, but remained compute/scoreboard limited.
+- One-vector software lookahead was required for D3072; removing it regressed
+  T8192/B1 from about 0.0451 to 0.0501 ms.
+- Input-precision parameter registers preserve exact values and FP32
+  accumulation while reducing live parameter storage.
+- Architecture-specific `prefetch.global.L2` was correctness-safe but slower
+  (D3072/T8192/B8 0.06499→0.06683 ms) and was rejected.
+- The largest mechanism win replaced the rectangular `max_blocks * B` grid
+  with exact packed token-block prefixes embedded from existing CPU sequence
+  metadata. This removed inactive uneven-B8 CTAs without an extra conversion or
+  launch and reduced D3072/T8192/B8 to about 0.0461 ms.
+- TensorSSA SiLU and tile12 produced the final W4 regime. W2/W3 retain the
+  direct CuTe regime; no selected path invokes Triton.
+- Full native correctness passes 72/72. Five-round primary timing passes the
+  TRT gate 12/12 with `1.125–3.466x` speedups.
+- Same-clock launch and copy floors were remeasured at 0.002963 ms and
+  6335.91 GB/s. Primary analytical SOL efficiency is only 25.6–35.5%, so the
+  independent SOL gate fails 12/12.
+- Final long D3072 NCU reports 68 registers, 43.75% theoretical and about 40%
+  achieved occupancy, 36% L1TEX scoreboard stalls, about 59% compute SOL, and
+  only 20.3–20.5% Memory Throughput/SOL.
+- Final status: **REJECTED/UNQUALIFIED**. The profile identifies current compute
+  pressure but does not prove a necessary alternative roof, so acceptance was
+  not relaxed.
+
+## 2026-08-27 — corrected independent acceptance gates
+
+- Replaced the prior soft language with two independent hard gates across all
+  12 primary BF16/W4 shapes:
+  1. repeatably beat unchanged exact git-`HEAD` TRT Triton;
+  2. reach at least 80% analytical SOL efficiency, plus at least 80% NCU Memory
+     Throughput/SOL for long memory-bound shapes. Short/crossover shapes instead
+     use 80% of the same-clock measured launch/dispatch roof.
+- A different necessary roof is admissible only with authoritative NCU evidence
+  and a recomputed defensible bound; the 80% threshold is not relaxed.
+- Equal output/state work, FP32 accumulation, one launch, padded/state behavior,
+  and timing boundaries remain fixed. No candidate-only untimed conversion or
+  Triton fallback is allowed.
+- The first-round kernel fails both the long-shape SOL gate and four TRT gates,
+  so its status is now explicitly `REJECTED/UNQUALIFIED`.
+- Added profile-linked hypotheses R2-I01 through R2-I10 before code changes.
+- Implemented the first second-round mechanism behind explicit environment
+  selection: a W4 four-phase register ring, width 2/4/8 channel vectors,
+  32/64/128/256-thread CTAs, and 4–128-token chunks. A runtime outer loop with
+  static four-token phases permits larger chunks without tile-wide live values
+  or fully unrolled code growth. This implementation is not a candidate result
+  until native correctness, benchmark, and NCU gates run.
+
 ## 2026-08-27 — relocation
 
 - Moved the complete package from CuTeDSLGen into

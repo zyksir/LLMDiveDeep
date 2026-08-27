@@ -26,27 +26,101 @@ BENCHMARK_LATENCIES_MS = {
     "cute_T8192_D3072_B1_tile4":  0.157800,  # approx from tile-sweep table
     "cute_T8192_D3072_B1_tile8":  0.103500,  # approx from tile-sweep table
     "cute_T1024_D3072_B8_tile4":  0.026561,  # REPORT.md: 3072 | 1024 | 8 | 0.026561
+    "r2_stream_v4_t128_tile16_T8192_D3072_B1": 0.052230,
+    "r2_selected_tile12_T128_D3072_B1": 0.009962,
+    "r2_selected_tile12_T8192_D3072_B1": 0.045081,
+    "r2_selected_tile12_T8192_D3072_B8": 0.046157,
+    "r2_triton_T128_D3072_B1": 0.029592,
+    "r2_triton_T8192_D3072_B1": 0.050728,
+    "r2_triton_T8192_D3072_B8": 0.058725,
 }
+
+# Round-3 benchmark latencies are read from the confidence receipt when it
+# exists, so the NCU report always reflects the latest five-round medians.
+_R3_CONFIDENCE = PKG_DIR / "results" / "r3_selected_main_confidence.json"
+_R3_TAG_SHAPE = {
+    "r3_v4tile12_tanh_nopf_T8192_D3072_B1": ("cute", 8192, 3072, 1),
+    "r3_v4tile20_tanh_T8192_D4608s_B1": ("cute", 8192, 4608, 1),
+    "r3_v4tile24_gs8_T8192_D3072_B1": ("cute", 8192, 3072, 1),
+    "r3_v4tile24_gs8_T8192_D4608s_B1": ("cute", 8192, 4608, 1),
+    "r3_selected_T8192_D3072_B1": ("cute", 8192, 3072, 1),
+    "r3_selected_T8192_D3072_B8": ("cute", 8192, 3072, 8),
+    "r3_selected_T8192_D4608s_B1": ("cute", 8192, 4608, 1),
+    "r3_selected_T8192_D4608s_B8": ("cute", 8192, 4608, 8),
+    "r3_triton_T8192_D4608s_B1": ("triton", 8192, 4608, 1),
+    "r3_triton_T8192_D4608s_B8": ("triton", 8192, 4608, 8),
+}
+
+
+def _load_r3_benchmark_latencies() -> None:
+    if not _R3_CONFIDENCE.exists():
+        return
+    records = json.loads(_R3_CONFIDENCE.read_text()).get("benchmarks", [])
+    by_key: dict[tuple, float] = {}
+    for record in records:
+        if record.get("latency_ms") is None:
+            continue
+        backend = "cute" if "cute" in record["backend"] else "triton"
+        by_key[
+            (backend, record["tokens"], record["channels"], record["batch"])
+        ] = record["latency_ms"]
+    for tag, key in _R3_TAG_SHAPE.items():
+        # Intermediate variant profiles keep their NCU durations only; the
+        # confidence-receipt latencies describe the selected config and the
+        # unchanged Triton baseline.
+        if key in by_key and (
+            tag.startswith("r3_selected_") or tag.startswith("r3_triton_")
+        ):
+            BENCHMARK_LATENCIES_MS[tag] = by_key[key]
+
+
+_load_r3_benchmark_latencies()
 
 # ── Analytical SOL lower bounds (from run.py sol_lower_bound at 1500 MHz) ───
 # copy_read_write_gbps = 6334.4 GB/s (measured at 1500 MHz clock)
 # fp32_peak_tflops = 56.832 (148 SMs × 128 FP32/SM/cycle × 2 × 1.5 GHz / 1000)
-COPY_BW_GBPS = 6334.4
-LAUNCH_FLOOR_MS = 0.003013
+COPY_BW_GBPS = 6335.906069678976
+LAUNCH_FLOOR_MS = 0.0029633920192718506
 
-def sol_lower_bound(T: int, D: int, B: int, W: int = 4) -> dict:
+# Round-3 calibrated attainable roofs (results/r3_roof_calibration.json):
+# best same-byte-volume, same-access-pattern streaming rate demonstrated on
+# this device at the 1500 MHz lock. Contiguous long shapes attain MORE than
+# the 1 GiB copy (6957 GB/s), so their floor tightens; the strided production
+# pattern attains at most 5845 GB/s (rows are 32B- but not 128B-aligned), so
+# its evidence-backed roof is lower.
+CALIBRATED_BW_GBPS = {
+    "contiguous_long": 6956.63565457511,
+    "strided_long": 5844.84718791298,
+}
+
+
+def sol_lower_bound(
+    T: int,
+    D: int,
+    B: int,
+    W: int = 4,
+    *,
+    bias: bool = True,
+    row_stride: int | None = None,
+) -> dict:
     element_bytes = 2  # bf16
     live_sequences = B
     initial_sequences = (B + 1) // 2
     mandatory_bytes = (
         2 * T * D * element_bytes
         + D * W * element_bytes
-        + D * element_bytes  # bias (assume bias=True)
+        + (D * element_bytes if bias else 0)
         + (initial_sequences + live_sequences) * D * (W - 1) * element_bytes
         + (B + 1 + B) * 4
         + B
     )
-    bandwidth_ms = mandatory_bytes / (COPY_BW_GBPS * 1e9) * 1e3
+    if row_stride is not None and T >= 8192:
+        roof_gbps = CALIBRATED_BW_GBPS["strided_long"]
+    elif T >= 8192:
+        roof_gbps = max(COPY_BW_GBPS, CALIBRATED_BW_GBPS["contiguous_long"])
+    else:
+        roof_gbps = COPY_BW_GBPS
+    bandwidth_ms = mandatory_bytes / (roof_gbps * 1e9) * 1e3
     flops = 2 * T * D * W
     fp32_peak_tflops = 56.832
     arithmetic_ms = flops / (fp32_peak_tflops * 1e12) * 1e3
@@ -61,6 +135,10 @@ def sol_lower_bound(T: int, D: int, B: int, W: int = 4) -> dict:
     )[0]
     return {
         "mandatory_bytes": mandatory_bytes,
+        "roof_gbps_used": roof_gbps,
+        "uncalibrated_bandwidth_floor_ms": (
+            mandatory_bytes / (COPY_BW_GBPS * 1e9) * 1e3
+        ),
         "bandwidth_floor_ms": bandwidth_ms,
         "arithmetic_floor_ms": arithmetic_ms,
         "serial_dep_floor_ms": serial_width_ms,
@@ -82,7 +160,21 @@ SHAPE_PARAMS = {
     "cute_T8192_D3072_B1_tile4":  (8192, 3072, 1),
     "cute_T8192_D3072_B1_tile8":  (8192, 3072, 1),
     "cute_T1024_D3072_B8_tile4":  (1024, 3072, 8),
+    "r2_stream_v4_t128_tile16_T8192_D3072_B1": (8192, 3072, 1),
+    "r2_selected_tile12_T128_D3072_B1": (128, 3072, 1),
+    "r2_selected_tile12_T8192_D3072_B1": (8192, 3072, 1),
+    "r2_selected_tile12_T8192_D3072_B8": (8192, 3072, 8),
+    "r2_triton_T128_D3072_B1": (128, 3072, 1),
+    "r2_triton_T8192_D3072_B1": (8192, 3072, 1),
+    "r2_triton_T8192_D3072_B8": (8192, 3072, 8),
 }
+
+# tag -> (row_stride, bias) overrides; default is contiguous with bias.
+SHAPE_LAYOUT = {}
+for _tag, (_backend, _T, _D, _B) in _R3_TAG_SHAPE.items():
+    SHAPE_PARAMS[_tag] = (_T, _D, _B)
+    if _D == 4608:
+        SHAPE_LAYOUT[_tag] = (4752, False)
 
 
 def parse_csv(csv_path: Path) -> dict[str, float | str]:
@@ -201,14 +293,29 @@ def extract_key_metrics(tag: str, m: dict) -> dict:
     # ── Benchmark and analytical SOL ──────────────────────────────────────
     bench_ms = BENCHMARK_LATENCIES_MS.get(tag)
     T, D, B = SHAPE_PARAMS.get(tag, (0, 0, 0))
-    sol = sol_lower_bound(T, D, B) if T else None
+    row_stride, has_bias = SHAPE_LAYOUT.get(tag, (None, True))
+    sol = (
+        sol_lower_bound(T, D, B, bias=has_bias, row_stride=row_stride)
+        if T
+        else None
+    )
 
-    # SOL fractions relative to the analytical bandwidth floor
+    # Keep bandwidth-only and defensible-bound efficiency separate. Short
+    # shapes are launch-bound, so interpreting them against bandwidth alone is
+    # incorrect.
     bw_floor_to_bench_ratio = None
     bw_fraction_of_floor = None
+    lower_bound_to_bench_ratio = None
+    analytical_sol_efficiency = None
     if bench_ms and sol:
         bw_floor_to_bench_ratio = bench_ms / sol["bandwidth_floor_ms"]
-        bw_fraction_of_floor = sol["bandwidth_floor_ms"] / bench_ms  # = 1/ratio
+        bw_fraction_of_floor = sol["bandwidth_floor_ms"] / bench_ms
+        lower_bound_to_bench_ratio = (
+            bench_ms / sol["defensible_lower_bound_ms"]
+        )
+        analytical_sol_efficiency = (
+            sol["defensible_lower_bound_ms"] / bench_ms
+        )
 
     # NCU duration-based achieved DRAM throughput fraction
     # (compares "bytes needed" / "time available" against copy bandwidth)
@@ -219,11 +326,29 @@ def extract_key_metrics(tag: str, m: dict) -> dict:
 
     return {
         "tag": tag,
-        "backend": "cute" if tag.startswith("cute") else "trt_triton",
-        "shape": {"T": T, "D": D, "B": B, "W": 4},
-        "tile": int(tag.split("tile")[1]) if "tile" in tag else None,
+        "backend": (
+            "cute"
+            if tag.startswith("cute") or "stream" in tag or "selected" in tag
+            or ("tanh" in tag and "triton" not in tag)
+            else "trt_triton"
+        ),
+        "shape": {
+            "T": T,
+            "D": D,
+            "B": B,
+            "W": 4,
+            "row_stride": row_stride,
+            "bias": has_bias,
+        },
+        "tile": (
+            int(re.search(r"tile(\d+)", tag).group(1))
+            if re.search(r"tile(\d+)", tag)
+            else None
+        ),
         "kernel_name_short": (
-            "CuTe_causal_conv1d" if tag.startswith("cute") else "Triton_causal_conv1d_fwd"
+            "CuTe_causal_conv1d"
+            if tag.startswith("cute") or "stream" in tag or "selected" in tag
+            else "Triton_causal_conv1d_fwd"
         ),
         "kernel_full_name": str(m.get("Kernel Name", "")),
         "launch_topology": {
@@ -299,10 +424,26 @@ def extract_key_metrics(tag: str, m: dict) -> dict:
             "benchmark_latency_ms": bench_ms,
             "bench_vs_bw_floor_ratio": round(bw_floor_to_bench_ratio, 2) if bw_floor_to_bench_ratio else None,
             "bw_fraction_of_floor": round(bw_fraction_of_floor, 3) if bw_fraction_of_floor else None,
+            "bench_vs_defensible_lower_bound_ratio": (
+                round(lower_bound_to_bench_ratio, 2)
+                if lower_bound_to_bench_ratio
+                else None
+            ),
+            "analytical_sol_efficiency": (
+                round(analytical_sol_efficiency, 3)
+                if analytical_sol_efficiency
+                else None
+            ),
+            "ncu_memory_throughput_sol_pct": memory_sol_pct,
             "ncu_mandatory_bw_efficiency": round(ncu_bw_efficiency, 3) if ncu_bw_efficiency else None,
             "interpretation": (
-                f"Kernel runs {bw_floor_to_bench_ratio:.1f}x slower than bandwidth-limited ideal"
-                if bw_floor_to_bench_ratio else "N/A"
+                (
+                    f"Kernel runs {lower_bound_to_bench_ratio:.1f}x slower than "
+                    f"the defensible {sol['dominant_bound']}-bound ideal "
+                    f"({analytical_sol_efficiency:.1%} analytical SOL efficiency)"
+                )
+                if lower_bound_to_bench_ratio
+                else "N/A"
             ),
         },
     }
@@ -321,6 +462,14 @@ def main() -> None:
         "cute_T8192_D3072_B1_tile4",
         "cute_T8192_D3072_B1_tile8",
         "cute_T1024_D3072_B8_tile4",
+        "r2_stream_v4_t128_tile16_T8192_D3072_B1",
+        "r2_selected_tile12_T128_D3072_B1",
+        "r2_selected_tile12_T8192_D3072_B1",
+        "r2_selected_tile12_T8192_D3072_B8",
+        "r2_triton_T128_D3072_B1",
+        "r2_triton_T8192_D3072_B1",
+        "r2_triton_T8192_D3072_B8",
+        *list(_R3_TAG_SHAPE),
     ]
 
     for tag in profile_order:

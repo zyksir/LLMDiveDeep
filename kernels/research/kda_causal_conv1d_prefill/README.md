@@ -85,14 +85,53 @@ docker exec trt-dev bash -lc \
    --matrix full --backends cute'
 ```
 
-## Result
+## Acceptance gate (round-3 framing)
 
-- Full matrix correctness: 72/72 against unchanged native output/state.
-- Focused semantic cases: 11/11, including short and padded sequences.
-- Candidate latency: 0.00782–0.09283 ms across the 72-shape matrix.
-- Versus native pipeline: wins 72/72, 3.43x geometric-mean speedup.
-- Versus one-launch git-`HEAD` Triton: wins 52/72, 1.88x geometric-mean
-  speedup; all four main BF16 W4 `T=8192` shapes remain slower.
+This is an unintegrated research candidate. Per the round-3 user acceptance
+update, **one single kernel configuration** (no per-regime dispatcher) must:
 
-The package is ready for Nsight Compute profiling, especially on the long
-sequence shapes where TRT Triton remains 1.34–1.87x faster.
+1. beat unchanged exact git-`HEAD` TRT Triton with a repeatable positive
+   margin on every BF16/W4 combination of `D={1536,3072}`,
+   `T={128,1024,8192}`, `B={1,uneven 8}` **and** on the Kimi-K3 production
+   strided shapes (`D=4608`, row-strided view with `stride(0)=4752`, no bias,
+   same T/B grid) — 18 gate shapes total (hard gate);
+2. report achieved SOL fractions against the calibrated attainable roofs plus
+   plateau evidence (best-effort gate; the previous hard 80% requirement was
+   softened by the user).
+
+Precision rules are binding: FP32 accumulation in every variant, documented
+SiLU-form deltas, no silent downgrades. FP16/BF16 W2/W3/W4 full-matrix
+correctness (dense 72 + strided production) with bitwise-exact states is
+independently mandatory. Results within 5% require repeated rounds and
+dispersion evidence.
+
+## Round-3 result (final)
+
+Selected single configuration — the backend default with no env vars set:
+stream algorithm (W4), vector width 4, 128 threads/CTA, token tile 16,
+group-batched loads with span 4, FP32 ring, tanh SiLU, BF16 parameter
+fragments (bitwise-identical to FP32 fragments), FP32 accumulation. W2/W3
+correctness shapes use the direct kernel (stream is W4-only; no gate shape is
+W2/W3).
+
+- **TRT Triton gate: PASS 18/18**, five-round repeatable speedups
+  **1.774–3.949x** (worst margin 77%; no confidence rerun triggered).
+- Correctness: case suite 17/17 and full matrix 108/108 rows against
+  unchanged native; conv states bitwise exact.
+- SOL vs calibrated roofs: 52.0–52.1% dense D3072 long, 59.7–60.7% dense
+  D1536 long, 64.7–64.9% strided production long; short/medium 31–40% of the
+  strict launch-floor bound. Plateau evidence (no saturated pipe; DRAM
+  latency under register-bound occupancy) is documented in `REPORT.md`.
+- Final NCU (selected config): dense long 24.5–25.2 µs at 47.6–48.1% compute
+  / 31.0–31.8% DRAM SOL; strided long 33.9–34.4 µs at 53.4–54.4% compute /
+  41.8–42.6% DRAM SOL. Unchanged Triton on strided long: 56.8–67.5 µs,
+  80.7/73.9% compute-bound.
+- Canonical artifacts: `results/r3_acceptance_summary.json`,
+  `results/r3_selected_main_confidence.json`,
+  `results/r3_selected_full_correctness.json`,
+  `results/r3_silu_precision_audit.json`,
+  `results/r3_roof_calibration.json`, `results/ncu/ncu_sol_report.json`.
+
+Round-2 history (superseded): the per-regime dispatcher passed the dense TRT
+gate 12/12 (1.125–3.466x) but was REJECTED on the then-hard 80% SOL gate at
+25.6–35.5% analytical efficiency; artifacts remain under `results/r2_*`.

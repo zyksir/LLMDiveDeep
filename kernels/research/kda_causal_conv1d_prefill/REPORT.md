@@ -2,228 +2,271 @@
 
 ## Outcome
 
-Implemented a durable one-launch CuTe DSL package for packed-varlen KDA prefill
-causal conv1d. It directly reads token-major rows, vectorizes eight contiguous
-channels per thread, accumulates in FP32, optionally applies bias and
-native-style SiLU, writes contiguous token-major output, and updates cached
-state without a second kernel.
+Round 3 delivers a **single CuTe DSL kernel configuration for every shape**
+(no per-regime dispatcher) for the one-launch packed-varlen KDA prefill
+depthwise causal conv1d contract, covering both the original dense gate matrix
+and the Kimi-K3 production row-strided shape.
 
-Status: **correct and useful, but not universally faster than the strongest
-one-launch TRT Triton path**.
+Status per the round-3 acceptance framing (Triton gate hard, SOL gate
+best-effort with plateau evidence):
 
-- Full required matrix correctness: 72/72 against native output and state.
-- Focused semantic suite: 11/11, including adversarial, short, padded, mixed
-  initial-state and permuted-slot cases.
-- Beats the native three-kernel pipeline on 72/72 shapes: 2.15–4.90x,
-  3.43x geometric mean.
-- Beats exact git-`HEAD` one-launch TRT Triton on 52/72 shapes: 0.535–4.39x,
-  1.88x geometric mean.
-- Main BF16 W4: wins 8/12 versus Triton; all four T=8192 shapes remain slower.
+- **TRT Triton gate: PASS 18/18.** The selected config beats unchanged
+  SHA-checked git-`HEAD` TRT Triton on all 12 primary dense BF16/W4 shapes AND
+  all 6 strided production shapes, with five-round repeatable margins of
+  **1.774–3.949x**. The worst margin is 77%, so no shape is inside the 5%
+  confidence-rerun band; every candidate round beats every Triton round on
+  every shape.
+- **Correctness: PASS.** Case suite (17 semantic cases) and the full matrix
+  (dense 72 + strided production variants, 108 correctness rows) pass against
+  the unchanged TRT native pipeline; conv states are bitwise exact.
+- **SOL, best-effort:** against the round-3 *calibrated attainable* roofs the
+  selected config reaches **52.0–52.1%** on dense D3072 long, **59.7–60.7%**
+  on dense D1536 long, and **64.7–64.9%** on the strided production long
+  shapes. Short/medium shapes sit at 31–40% of the conservative launch-floor
+  bound. The 80% target was not reached; plateau evidence below documents
+  where the residual goes (DRAM latency under occupancy-limited hiding, with
+  no saturated pipe).
 
-## Hardware and software
+No TensorRT-LLM file was edited, no KDA integration was added, no Triton
+fallback exists, and no commit was created.
 
-Identity reporting is inconsistent:
+## Selected single configuration
 
-- host `nvidia-smi`: `NVIDIA L20D`, capability 8.9;
-- CUDA runtime in the measured container: `NVIDIA L20D`, capability 10.3,
-  148 SMs, 287,428,771,840 bytes.
+One setting for all shapes, batch sizes, and layouts — now the backend
+default when no environment variable is set:
 
-The executable target is therefore SM103, but the device is not claimed to be
-B200. GPU runs used the repository lease helper and a 1500 MHz SM clock lock.
+| Knob | Value |
+|---|---|
+| algorithm | stream (W4 gate shapes; W2/W3 correctness shapes use the direct kernel — stream is W4-only and no gate shape is W2/W3) |
+| vector width | 4 (8-byte LDG/STG; clamped by measured alignment) |
+| threads per CTA | 128 |
+| token tile | 16 |
+| group-batched loads | on, span 4 |
+| history/current fragments | FP32 ring (each loaded value converted BF16→FP32 exactly once) |
+| SiLU form | tanh (`0.5x(1+tanh(x/2))`, MUFU.TANH; expdiv available via `KDA_CUTE_SILU_MODE=expdiv`) |
+| parameters | BF16 weight/bias fragments — bitwise identical outputs/states vs FP32 fragments (precision audit) |
+| accumulation | FP32, mandatory, in every variant |
 
-- Candidate: nvidia-cutlass-dsl 4.5.2.
-- Recorded matrix container: TensorRT-LLM 1.3.0rc23, torch
+Worst-case sacrifice versus the per-shape best variant observed in the
+round-3 sweeps is **+3.7%** (dense D3072 T8192 B8: 0.02779 vs 0.02680 ms for
+tile24/span4, which in turn loses a strided medium shape by 15%). All other
+measured shapes are within ~2.3% of their per-shape best, so no dispatch is
+needed.
+
+## Hard gates (round-3 framing)
+
+1. Beat SHA-checked git-`HEAD` TRT Triton with repeatable positive margin on
+   every one of the 12 primary dense BF16/W4 shapes (`D={1536,3072}`,
+   `T={128,1024,8192}`, `B={1,uneven 8}`) **and** the 6 production strided
+   shapes (`D=4608`, row stride 4752, no bias, same T/B grid). **PASS 18/18.**
+2. SOL is best-effort per the user acceptance update: report achieved
+   fractions against the calibrated roofs plus plateau evidence, instead of a
+   REJECTED-on-SOL verdict. Precision rules stay binding: FP32 accumulation
+   everywhere, documented SiLU-form deltas, no silent downgrades.
+
+Full FP16/BF16 W2/W3/W4 correctness (dense 72 + strided production), FP32
+accumulation, equal output/state and padded-slot work, one launch, equal
+timing boundaries, and no candidate-only untimed conversion remain mandatory
+and all hold.
+
+## Hardware, sources, and floors
+
+- CUDA runtime identity: `NVIDIA L20D`, capability 10.3 (SM103), 148 SMs,
+  287,428,771,840 bytes; host `nvidia-smi` reports capability 8.9. No B200
+  claim is made.
+- Fixed benchmark SM clock: 1500 MHz through the repository GPU lease.
+- Environment caveat: per user authorization, runs used GPU 7 with 0%
+  utilization but co-resident idle process memory (~18–43 GiB held by
+  long-lived containers). Utilization was verified 0% at claim time for every
+  timed/NCU run and the five-round dispersion is tight (see receipt).
+- Launch floor (this run): 0.002369 ms. 1 GiB copy: 6319.4 GB/s.
+- Modeled FP32 peak at 1500 MHz: 56.832 TFLOP/s.
+- CuTe DSL 4.5.2; container TensorRT-LLM 1.3.0rc23, torch
   2.12.0a0+5aff3928d8.nv26.05, CUDA 13.2.
-- Standalone `uv run` smoke: torch 2.9.1+cu130, CUDA 13.0.
-- git-`HEAD` Triton source SHA256:
+- git-`HEAD` Triton SHA256:
   `68860408e57d076765d1e0be13cc87b9a3811ea9424de670d1c39821e5332432`.
-- inspected native CUDA source SHA256:
-  `8c31ce1bc4e6137b530728f02d4052f0117c0fbba1d64ede8f9b9864aa266470`.
 
-## Pre-candidate gate and SOL lower bound
+### Calibrated attainable roofs (`results/r3_roof_calibration.json`)
 
-Decision: **PROCEED**.
+The round-2 roof (1 GiB contiguous copy) was tested with minimal
+same-byte-volume, same-access-pattern streaming copy kernels at the real
+payloads and the 1500 MHz lock:
 
-At 1500 MHz:
+| Pattern | Calibrated roof | vs 1 GiB copy (6336 GB/s) |
+|---|---:|---|
+| contiguous T8192 D3072 (~100.7 MB) | 6956.6 GB/s | tighter — the roof was attainable and then some |
+| contiguous T8192 D1536 (~50.4 MB) | 5813.5 GB/s | lower — smaller payload cannot sustain copy peak |
+| strided T8192 D4608 rs4752 (~151 MB) | 5844.8 GB/s | lower — rows are 32B- but not 128B-aligned; every 9216 B row read spans partial 128 B DRAM lines at both edges |
+| T1024 / T128 payloads | far below copy peak | launch/ramp dominated; the strict launch-floor bound is retained because raising a floor relaxes the gate |
 
-- isolated one-kernel launch floor: 0.003013 ms;
-- 1 GiB copy: 0.339019 ms, 6334.4 GB/s counting read and write;
-- modeled FP32 peak: 56.832 TFLOP/s;
-- main-shape native baseline: 0.02959–0.25206 ms;
-- main-shape git-`HEAD` Triton baseline: 0.02924–0.05879 ms.
+## Round-3 variant campaign
 
-For BF16 W4 T8192 D3072, the conservative mandatory traffic is
-100.73–100.92 MB. The resulting floors are:
+Representative quick-matrix medians at 1500 MHz (dense D3072 T8192 B8 /
+strided D4608 T8192 B1), each mechanism layered on the previous winner:
 
-- memory: 0.01590–0.01593 ms;
-- arithmetic: 0.00354 ms;
-- serial four-FMA chain: 0.0000107 ms;
-- combined with launch: 0.01590–0.01593 ms.
+| Mechanism | dense long B8 | strided long B1 |
+|---|---:|---:|
+| round-2 selected (tile12, expdiv SiLU, lookahead) | 0.0455 ms | — |
+| tanh SiLU (R3-I02) | 0.0382 ms | 0.0501 ms |
+| best per-shape tuning of tile/prefetch/threads (R3-I05–I07) | 0.0353 ms | 0.0495 ms |
+| group-batched loads, span 8, tile 24 (R3-I08/I09) | 0.0286 ms | 0.0408 ms |
+| FP32 parameter fragments (R3-I10) | ±<2% (bitwise-identical outputs; compiler already hoists converts) | ±<2% |
+| **FP32 ring, span 4, tile 16 (R3-I11, selected)** | **0.0279 ms** | **0.0399 ms** |
 
-The pre-candidate Triton result was 0.05097–0.05879 ms, leaving a falsifiable
-gap while already removing the native layout-copy kernels.
+Refuted mechanisms with evidence in the ledger: 16/32-byte vectorization
+(register/occupancy cost dominates, unlike the pure-copy calibration where
+vec8 wins), L2 prefetch hints, span 12, FP32 ring at span 8 (register
+pressure), 256-thread CTAs.
 
-## Design and variants
+## Final gate matrix
 
-The accepted kernel uses a grid over `(channel tile, token tile, sequence)`.
-One thread owns eight adjacent channels. For each token tile it:
+Medians of five rounds, 50 warmups and 500 timed iterations per round,
+1500 MHz. SOL fraction = calibrated defensible lower bound / measured.
+Receipt: `results/r3_acceptance_summary.json`.
 
-1. preloads per-channel weights and optional bias to FP32 registers;
-2. gathers up to four causal token/state rows with 128-bit row-major loads;
-3. performs FP32 accumulation and optional fast exponential SiLU;
-4. writes one 128-bit contiguous output vector.
+| D | T | B | layout | CuTe ms | Triton ms | speedup | SOL vs calibrated |
+|---:|---:|---:|---|---:|---:|---:|---:|
+| 1536 | 128 | 1 | dense | 0.007480 | 0.028333 | 3.788x | 31.7% |
+| 1536 | 128 | 8 | dense | 0.007515 | 0.028637 | 3.810x | 31.5% |
+| 1536 | 1024 | 1 | dense | 0.007525 | 0.029423 | 3.910x | 31.5% |
+| 1536 | 1024 | 8 | dense | 0.007469 | 0.029182 | 3.907x | 31.7% |
+| 1536 | 8192 | 1 | dense | 0.014270 | 0.029157 | 2.043x | 60.7% |
+| 1536 | 8192 | 8 | dense | 0.014532 | 0.030017 | 2.066x | 59.7% |
+| 3072 | 128 | 1 | dense | 0.007353 | 0.029005 | 3.945x | 32.2% |
+| 3072 | 128 | 8 | dense | 0.007434 | 0.029156 | 3.922x | 31.9% |
+| 3072 | 1024 | 1 | dense | 0.007771 | 0.028989 | 3.730x | 30.5% |
+| 3072 | 1024 | 8 | dense | 0.007459 | 0.029083 | 3.899x | 31.8% |
+| 3072 | 8192 | 1 | dense | 0.027778 | 0.050785 | 1.828x | 52.1% |
+| 3072 | 8192 | 8 | dense | 0.027900 | 0.058693 | 2.104x | 52.0% |
+| 4608 | 128 | 1 | strided | 0.007324 | 0.028652 | 3.912x | 32.3% |
+| 4608 | 128 | 8 | strided | 0.007395 | 0.029205 | 3.949x | 32.0% |
+| 4608 | 1024 | 1 | strided | 0.007416 | 0.028922 | 3.900x | 40.5% |
+| 4608 | 1024 | 8 | strided | 0.008010 | 0.028814 | 3.597x | 38.0% |
+| 4608 | 8192 | 1 | strided | 0.039847 | 0.070683 | 1.774x | 64.9% |
+| 4608 | 8192 | 8 | strided | 0.040031 | 0.082812 | 2.069x | 64.7% |
 
-Chunk zero snapshots initial cached state before updating the slot. This is
-required: the rejected tail-CTA update raced chunk-zero history reads even
-though final state itself looked correct.
+Short/medium SOL fractions are measured against the strict launch-floor
+bound; those shapes are launch/ramp-bound at ~7.3–8.0 µs versus a 2.4–3.0 µs
+isolated launch floor and beat Triton by ~3.6–3.9x.
 
-Token-tile sweep on three BF16 W4 points:
+## Correctness and precision
 
-| tile | T128 D1536 B1 | T1024 D1536 B8 | T8192 D3072 B8 | compile/setup |
-|---:|---:|---:|---:|---:|
-| 4 | 0.008707 ms | 0.017643 ms | 0.158073 ms | ~1.46–1.58 s |
-| 8 | 0.011695 ms | 0.017789 ms | 0.103572 ms | ~2.60–2.73 s |
-| 16 | 0.018273 ms | 0.021488 ms | 0.091948 ms | ~4.93–5.02 s |
+- Full matrix: 108/108 correctness rows pass vs unchanged native (dense 72
+  incl. FP16/W2/W3 plus strided production variants); conv states bitwise
+  exact. Case suite 17/17 (unscaled, adversarial extremes, short, padded,
+  mixed initial state, permuted slots, no-bias/no-activation, strided).
+- Precision audit (`results/r3_silu_precision_audit.json`): FP32 accumulation
+  present in every variant; BF16 parameter fragments bitwise-identical to the
+  FP32-parameter path; tile/threads/prefetch config choices bitwise-invariant;
+  SiLU tanh form vs native worst max-abs 3.13e-2 (BF16 unscaled, atol gate
+  1e-1) with abs error <= 4.9e-4 wherever the reference magnitude is below
+  atol; expdiv form worst max-abs 1.95e-3. tanh was selected for speed
+  (dense long 0.0353 vs 0.0457 ms at selection time) with this delta
+  documented; expdiv remains selectable.
 
-Best variant is adaptive: tile 4 when maximum sequence length is at most 1024,
-tile 16 otherwise. A tile-32 attempt produced no tracked exit status or JSON
-and made the terminal unavailable for roughly 23 minutes; it was rejected.
+## Final NCU (selected config) and plateau evidence
 
-## Full latency summary
+NCU replay clocks ~2.0 GHz despite the benchmark lock, so NCU durations are
+not substituted for 1500 MHz latencies. `results/ncu/ncu_sol_report.json` is
+canonical.
 
-All values below are one-launch candidate latency ranges over D={1536,3072},
-T={128,1024,8192}, B={1,uneven 8}.
+| Profile | duration | compute SOL | DRAM SOL | regs | occ theory / achieved | bench vs calibrated floor |
+|---|---:|---:|---:|---:|---:|---:|
+| selected T8192 D3072 B1 | 24.5 µs | 47.6% | 31.8% | 72 | 43.8% / 38.4% | 1.92x |
+| selected T8192 D3072 B8 | 25.2 µs | 48.1% | 31.0% | 72 | 43.8% / 37.6% | 1.92x |
+| selected T8192 D4608s B1 | 33.9 µs | 53.4% | 42.6% | 64 | 50.0% / 43.7% | 1.54x |
+| selected T8192 D4608s B8 | 34.4 µs | 54.4% | 41.8% | 64 | 50.0% / 44.2% | 1.55x |
+| Triton T8192 D4608s B1 | 56.8 µs | 80.7% | 25.9% | 32 | 100% / 89.7% | 2.73x |
+| Triton T8192 D4608s B8 | 67.5 µs | 73.9% | 22.0% | 32 | 100% / 89.7% | 3.20x |
 
-| dtype / W | CuTe range (ms) | native geometric speedup | Triton geometric speedup | Triton wins |
-|---|---:|---:|---:|---:|
-| FP16 / 2 | 0.008109–0.057200 | 4.03x | 2.18x | 9/12 |
-| FP16 / 3 | 0.007825–0.069029 | 3.53x | 1.95x | 9/12 |
-| FP16 / 4 | 0.008741–0.088605 | 2.91x | 1.63x | 8/12 |
-| BF16 / 2 | 0.007828–0.058534 | 3.99x | 2.17x | 9/12 |
-| BF16 / 3 | 0.007842–0.074090 | 3.43x | 1.88x | 9/12 |
-| BF16 / 4 | 0.008380–0.092828 | 2.86x | 1.58x | 8/12 |
+Counter evolution across the round (dense long B1): DRAM SOL 20.5% →
+22.8% (tanh/no-prefetch) → 31.4% (group loads) → 31.8% (selected); duration
+38.7 → 34.7 → 24.4 → 24.5 µs.
 
-Main BF16 W4:
+Plateau evidence — where the residual 1.5–1.9x above the calibrated floor is
+spent:
 
-| D | T | B | CuTe ms | native ms | TRT Triton ms | vs native | vs Triton |
-|---:|---:|---:|---:|---:|---:|---:|---:|
-| 1536 | 128 | 1 | 0.008380 | 0.032523 | 0.030843 | 3.88x | 3.68x |
-| 1536 | 128 | 8 | 0.008987 | 0.033088 | 0.030596 | 3.68x | 3.40x |
-| 1536 | 1024 | 1 | 0.010762 | 0.033217 | 0.030594 | 3.09x | 2.84x |
-| 1536 | 1024 | 8 | 0.017871 | 0.038438 | 0.030527 | 2.15x | 1.71x |
-| 1536 | 8192 | 1 | 0.040698 | 0.100276 | 0.030661 | 2.46x | 0.75x |
-| 1536 | 8192 | 8 | 0.058142 | 0.134691 | 0.031105 | 2.32x | 0.53x |
-| 3072 | 128 | 1 | 0.008706 | 0.032841 | 0.030776 | 3.77x | 3.54x |
-| 3072 | 128 | 8 | 0.012035 | 0.043873 | 0.030678 | 3.65x | 2.55x |
-| 3072 | 1024 | 1 | 0.015031 | 0.033388 | 0.030406 | 2.22x | 2.02x |
-| 3072 | 1024 | 8 | 0.026561 | 0.064377 | 0.030547 | 2.42x | 1.15x |
-| 3072 | 8192 | 1 | 0.068906 | 0.189200 | 0.051229 | 2.75x | 0.74x |
-| 3072 | 8192 | 8 | 0.092828 | 0.252461 | 0.059022 | 2.72x | 0.64x |
+- **No unit is saturated.** Compute SOL 47.6–54.4%, DRAM SOL 31.0–42.6%; the
+  busiest pipe is ALU at 37.0–38.6% (FMA 26–28%, XU/SFU 12.7–13.7%, LSU
+  9.2–9.6%). The FP32 ring specifically cut ALU from 64–66% (span-8 profile)
+  by removing repeated BF16→FP32 converts, and cycles-per-issue fell from
+  ~14.2 to 10.3–11.5.
+- **The dominant residual is DRAM latency under occupancy-limited hiding:**
+  long-scoreboard stalls are 5.2–6.0 of the 10.3–11.5 cycles per issued
+  instruction (~52%), even after group-batched loads quadrupled the bytes in
+  flight per thread. Occupancy is capped by registers (72/64 per thread →
+  43.8–50% theoretical, 37.6–44.2% achieved); every attempt to push more
+  bytes in flight (span 8/12, FP32 ring at span 8, wider vectors) raised
+  register pressure and regressed.
+- **Mechanisms exhausted:** SiLU reformulation, vector widths 2–16, tiles
+  4–32, CTA widths 64–256, L2 prefetch hints, software lookahead, group-load
+  spans 4–12, FP32 parameter fragments, FP32 ring. The remaining gap would
+  require latency-hiding machinery (cp.async/TMA-style staging through shared
+  memory) that CuTe DSL's SIMT path would have to express without inflating
+  the register budget that already binds — no untried counter-indicated
+  mechanism remains within the current kernel architecture, so exploration
+  stops per the acceptance update.
 
-The complete 72-shape values are in the JSON receipts, not rounded tables.
+For reference, unchanged Triton on the strided production long shapes runs at
+80.7%/73.9% compute SOL with only 25.9%/22.0% DRAM SOL — it is
+instruction-bound and 1.77–2.07x slower.
 
-## Correctness
+## Compile, timing, and artifacts
 
-- Full matrix: 72/72 output/state checks passed.
-- Focused suite: 11/11 passed.
-- State comparison is bitwise exact.
-- Focused worst output error:
-  - FP16 normal: 1.22e-4 maximum absolute;
-  - BF16 unscaled: 1.95e-3 maximum absolute;
-  - adversarial FP16 and padded/short cases: exact in the recorded cases.
-- Tolerances: FP16 `rtol=1e-2, atol=1e-2`; BF16
-  `rtol=1e-2, atol=1e-1`, matching TensorRT module practice.
+- Full-matrix correctness wall time: 193.5 s; case suite 27.4 s; five-round
+  main benchmark 38.3 s.
+- Compilation, metadata preparation, and output allocation are outside
+  timing; the timed body is exactly one GPU launch.
 
-## Compile and wall times
+Canonical artifacts:
 
-- Candidate per-shape cold setup/compile: 0.863–5.027 s.
-- Sum of setup/compile over 72 distinct specializations: 152.35 s.
-- Candidate full benchmark runner: 153.60 s.
-- Candidate full correctness runner: 165.70 s.
-- Baseline full benchmark runner: 15.27 s.
-- Focused correctness runner: 30.71 s.
-- Standalone cached `uv run` quick smoke: 10.69 s runner wall time.
-- Cached tile-4 timed sections for 200 calls were 1.81 ms, 3.60 ms, and
-  31.69 ms for the three quick points.
+- `results/r3_acceptance_summary.json` — final per-shape gate verdicts/SOL
+- `results/r3_selected_main_confidence.json` — five-round benchmark
+- `results/r3_selected_full_correctness.json`, `results/r3_selected_case_correctness.json`
+- `results/r3_silu_precision_audit.json` — precision audit
+- `results/r3_roof_calibration.json` — calibrated roofs
+- `results/ncu/ncu_sol_report.json`, `results/ncu/r3_selected_*.ncu-rep/.csv`,
+  `results/ncu/r3_triton_T8192_D4608s_*.ncu-rep/.csv`
 
-Compilation and output allocation are outside the timed kernel region.
+## Reproduction
 
-## Commands run
-
-From `/node-storage/CuTeDSLGen`:
+From `/node-storage/CuTeDSLGen`, preserving the GPU lease and 1500 MHz lock
+(the selected config is the default; no env vars needed):
 
 ```bash
-# Baseline semantic suite
-bash evaluation/decomposition_ab/gpu_run.sh -- bash -lc \
-  'docker exec -e CUDA_VISIBLE_DEVICES="$CUDA_VISIBLE_DEVICES" trt-dev bash -lc "
-   cd /node-storage/CuTeDSLGen/generated/blackwell_kda_causal_conv1d_prefill &&
-   python3 run.py --mode correctness --backends trt_native,trt_triton_head"'
+# Correctness (case suite + full matrix) and five-round confidence benchmark
+GPU_POOL=7 IDLE_GATE_MEM_MIB=60000 bash evaluation/decomposition_ab/gpu_run.sh -t 7200 -- \
+  bash /node-storage/LLMDiveDeep/kernels/research/kda_causal_conv1d_prefill/r3_final_inner.sh
 
-# Candidate focused and full correctness
-bash evaluation/decomposition_ab/gpu_run.sh -- bash -lc \
-  'docker exec -e CUDA_VISIBLE_DEVICES="$CUDA_VISIBLE_DEVICES" trt-dev bash -lc "
-   cd /node-storage/CuTeDSLGen/generated/blackwell_kda_causal_conv1d_prefill &&
-   KDA_CUTE_TOKEN_TILE=auto python3 run.py --mode matrix-correctness \
-   --matrix full --backends cute"'
+# Final NCU profiles + parse
+CPID=$(docker inspect -f '{{.State.Pid}}' trt-dev)
+GPU_POOL=7 IDLE_GATE_MEM_MIB=60000 bash evaluation/decomposition_ab/gpu_run.sh -t 5400 -- \
+  env KDA_NCU_PROFILE_SET=round3-final \
+  bash /node-storage/LLMDiveDeep/kernels/research/kda_causal_conv1d_prefill/ncu_inner_profiles.sh \
+  "$CPID" /node-storage/LLMDiveDeep/kernels/research/kda_causal_conv1d_prefill \
+  /node-storage/LLMDiveDeep/kernels/research/kda_causal_conv1d_prefill/results/ncu
+docker exec -w /node-storage/LLMDiveDeep/kernels/research/kda_causal_conv1d_prefill trt-dev \
+  python3 parse_ncu_results.py
 
-# Full candidate and baseline performance matrices
-bash evaluation/decomposition_ab/gpu_run.sh -- bash -lc \
-  'docker exec -e CUDA_VISIBLE_DEVICES="$CUDA_VISIBLE_DEVICES" trt-dev bash -lc "
-   cd /node-storage/CuTeDSLGen/generated/blackwell_kda_causal_conv1d_prefill &&
-   KDA_CUTE_TOKEN_TILE=auto python3 run.py --mode benchmark --matrix full \
-   --backends cute --warmup 20 --iterations 100"'
-
-bash evaluation/decomposition_ab/gpu_run.sh -- bash -lc \
-  'docker exec -e CUDA_VISIBLE_DEVICES="$CUDA_VISIBLE_DEVICES" trt-dev bash -lc "
-   cd /node-storage/CuTeDSLGen/generated/blackwell_kda_causal_conv1d_prefill &&
-   python3 run.py --mode benchmark --matrix full \
-   --backends trt_native,trt_triton_head --warmup 20 --iterations 100"'
-
-# Repository-native standalone smoke
-bash evaluation/decomposition_ab/gpu_run.sh -- \
-  uv run python generated/blackwell_kda_causal_conv1d_prefill/run.py \
-  --mode benchmark --matrix quick --backends cute --warmup 5 --iterations 20
+# Acceptance receipt
+python3 /node-storage/LLMDiveDeep/kernels/research/kda_causal_conv1d_prefill/build_r3_acceptance.py
 ```
 
-## Limitations and profiling readiness
+## Limitations
 
-- Long T=8192 sequences are 1.34–1.87x slower than TRT Triton. The CuTe
-  straight-line token-tile body likely trades fewer CTAs for register/code
-  pressure; this is the first NCU target.
-- The native op came from the immutable TensorRT-LLM 1.3.0rc23 container
-  extension. Its observed semantics match the inspected checkout source, but
-  the container binary was not rebuilt from that exact checkout hash.
-- Exact git-`HEAD` Triton padded output is intentionally not a correctness
-  baseline because it returns without initializing padded output. Native is
-  authoritative there.
-- Non-padded cache slots must be unique within a call.
-- Dynamic sequence lengths require their CPU mirror at prepare time; omitting
-  it causes a setup-only GPU-to-CPU metadata synchronization.
-- Specializations key on dtype, W, D, T, B, maximum sequence length, bias,
-  activation, and tile. Cold compile is not suitable for an uncached hot path.
+- SOL fractions plateau at 52–65% of the calibrated roofs on long shapes; the
+  documented blocker is DRAM latency with register-bound occupancy, and no
+  counter-indicated mechanism remains inside the current SIMT architecture.
+  A shared-memory staged (cp.async/TMA) redesign is the only identified path
+  and is out of round-3 scope.
+- Short shapes remain ~3x above the isolated launch floor (launch/ramp
+  dominated) while beating Triton ~3.9x.
+- Timing was collected on a shared-memory-resident device (utilization
+  verified 0% before each run) per user authorization.
+- The native extension binary was not rebuilt from the inspected checkout,
+  although observed semantics match the source. Native remains authoritative
+  for padded output because exact git-`HEAD` Triton leaves it uninitialized.
 
-**Ready for NCU profiling: yes.** Correctness is gated, launch count is one,
-the strongest comparison is recorded, and the long-sequence regressions provide
-specific profile targets: register count/occupancy, instruction count, achieved
-DRAM/L2 bandwidth, and weight/input load reuse.
-
-## Files added
-
-```text
-generated/blackwell_kda_causal_conv1d_prefill/
-  README.md
-  OPERATION_SPEC.md
-  IDEA_LEDGER.md
-  JOURNAL.md
-  REPORT.md
-  common.py
-  kernel.py
-  run.py
-  backends/__init__.py
-  backends/cute_direct.py
-  backends/trt_native.py
-  backends/trt_triton_head.py
-  results/*.json
-```
-
-No TensorRT-LLM or KDA integration files were edited. No commit was created.
+Decision: **Triton gate PASS 18/18 with the single selected configuration;
+SOL reported best-effort with plateau evidence per the user acceptance
+update.**

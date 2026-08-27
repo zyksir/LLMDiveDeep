@@ -24,6 +24,9 @@ from common import (
     hardware_identity,
     main_performance_matrix,
     make_problem,
+    production_performance_matrix,
+    production_shape,
+    quantiles,
     time_cuda,
     write_json,
 )
@@ -125,8 +128,31 @@ def _select_matrix(name: str) -> list[Shape]:
             Shape("bf16", 4, 1536, 1024, 8),
             Shape("bf16", 4, 3072, 8192, 8),
         ]
+    if name == "quick-strided":
+        return [
+            production_shape(128, 1),
+            production_shape(1024, 8),
+            production_shape(8192, 1),
+            production_shape(8192, 8),
+        ]
     if name == "main":
         return main_performance_matrix()
+    if name == "production":
+        return production_performance_matrix()
+    if name == "long-b1":
+        return [
+            Shape("bf16", 4, channels, 8192, 1)
+            for channels in (1536, 3072)
+        ]
+    if name == "long":
+        return [
+            Shape("bf16", 4, channels, 8192, batch)
+            for channels in (1536, 3072)
+            for batch in (1, 8)
+        ] + [
+            production_shape(8192, batch)
+            for batch in (1, 8)
+        ]
     if name == "full":
         return full_matrix()
     raise ValueError(name)
@@ -137,6 +163,7 @@ def run_benchmark(
     matrix: str,
     warmup: int,
     iterations: int,
+    rounds: int,
 ) -> list[dict[str, object]]:
     records: list[dict[str, object]] = []
     for shape in _select_matrix(matrix):
@@ -165,9 +192,27 @@ def run_benchmark(
                 prepared.run()
                 torch.cuda.synchronize()
                 first_seconds = time.perf_counter() - first_start
-                record.update(time_cuda(prepared, warmup, iterations))
+                measurements = [
+                    time_cuda(prepared, warmup, iterations)
+                    for _ in range(rounds)
+                ]
+                round_latencies_ms = [
+                    measurement["latency_ms"]
+                    for measurement in measurements
+                ]
+                latency_quantiles_ms = quantiles(round_latencies_ms)
                 record.update(
                     {
+                        "latency_ms": latency_quantiles_ms["median_ms"],
+                        "round_latencies_ms": round_latencies_ms,
+                        "latency_quantiles_ms": latency_quantiles_ms,
+                        "rounds": rounds,
+                        "wall_seconds": sum(
+                            measurement["wall_seconds"]
+                            for measurement in measurements
+                        ),
+                        "warmup": warmup,
+                        "iterations": iterations,
                         "setup_seconds": setup_seconds,
                         "first_call_seconds": first_seconds,
                         "launch_count": prepared.launch_count,
@@ -278,9 +323,22 @@ def parse_args() -> argparse.Namespace:
         default="trt_native,trt_triton_head",
         help=f"comma-separated names from {sorted(BACKEND_MODULES)}",
     )
-    parser.add_argument("--matrix", choices=("quick", "main", "full"), default="quick")
+    parser.add_argument(
+        "--matrix",
+        choices=(
+            "quick",
+            "quick-strided",
+            "main",
+            "production",
+            "long-b1",
+            "long",
+            "full",
+        ),
+        default="quick",
+    )
     parser.add_argument("--warmup", type=int, default=20)
     parser.add_argument("--iterations", type=int, default=100)
+    parser.add_argument("--rounds", type=int, default=1)
     parser.add_argument("--output", type=Path, default=None)
     return parser.parse_args()
 
@@ -311,6 +369,7 @@ def main() -> None:
                 args.matrix,
                 args.warmup,
                 args.iterations,
+                args.rounds,
             )
     payload["full_run_wall_seconds"] = time.perf_counter() - started
     output = args.output or RESULTS_DIR / f"{args.mode}_{args.matrix}.json"

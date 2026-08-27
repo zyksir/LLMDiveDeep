@@ -23,9 +23,12 @@ echo "[ncu_inner] SM clock: $(nvidia-smi -i "${GPU}" --query-gpu=clocks.sm --for
 echo "[ncu_inner] ncu: $(nsenter --target "${CONTAINER_PID}" --mount --pid --uts --net -- "${NCU_BIN}" --version 2>&1 | head -1)"
 
 # ── Helper: run one NCU profile ──────────────────────────────────────────────
-# Usage: run_one <tag> <backend> <T> <D> <B> [<tile>]
+# Usage: run_one <tag> <backend> <T> <D> <B> [<tile> [<algorithm> [<vector_width> [<threads> [<extra driver args...>]]]]]
 run_one() {
     local tag="$1" backend="$2" T="$3" D="$4" B="$5" tile="${6:-}"
+    local algorithm="${7:-direct}" vector_width="${8:-4}" threads="${9:-128}"
+    shift $(( $# > 9 ? 9 : $# ))
+    local extra_args="$*"
     local report="${RESULTS_DIR}/${tag}"
     local log_file="${RESULTS_DIR}/${tag}_ncu.log"
     local csv_file="${RESULTS_DIR}/${tag}.csv"
@@ -59,6 +62,9 @@ export PATH='${CONTAINER_PATH}'
 export OPAL_PREFIX=/usr/local/mpi
 export OMPI_MCA_coll_hcoll_enable=0
 export KDA_CUTE_TOKEN_TILE='${tile:-auto}'
+export KDA_CUTE_ALGORITHM='${algorithm}'
+export KDA_CUTE_VECTOR_WIDTH='${vector_width}'
+export KDA_CUTE_THREADS='${threads}'
 cd '${PKG_DIR}'
 '${NCU_BIN}' \
     --range-filter 'yes:1:' \
@@ -69,6 +75,9 @@ cd '${PKG_DIR}'
     python3 '${PKG_DIR}/ncu_profile_driver.py' \
         --backend '${backend}' \
         --T '${T}' --D '${D}' --B '${B}' ${tile_args} \
+        --algorithm '${algorithm}' \
+        --vector-width '${vector_width}' --threads '${threads}' \
+        ${extra_args} \
         --warmup 10 --iterations 1
 " > "${log_file}" 2>&1
     local profile_rc=$?
@@ -96,32 +105,49 @@ cd '${PKG_DIR}'
 
 # ── Profile schedule (serialized, GPU clock locked by gpu_run.sh) ────────────
 
-# 1. Short winner: T=128 D=3072 B=1 tile=4 (auto selects tile=4 for max_seq<=1024)
-run_one "cute_T128_D3072_B1_tile4"   cute            128  3072 1 4
-
-# 2. Long regression: T=8192 D=3072 B=1 tile=16 (auto selects tile=16 for max_seq>1024)
-run_one "cute_T8192_D3072_B1_tile16" cute            8192 3072 1 16
-
-# 3. Long regression B=8 uneven batch
-run_one "cute_T8192_D3072_B8_tile16" cute            8192 3072 8 16
-
-# 4. TRT Triton baseline: T=128 D=3072 B=1
-run_one "triton_T128_D3072_B1"       trt_triton_head 128  3072 1
-
-# 5. TRT Triton baseline: T=8192 D=3072 B=1
-run_one "triton_T8192_D3072_B1"      trt_triton_head 8192 3072 1
-
-# 6. TRT Triton baseline: T=8192 D=3072 B=8
-run_one "triton_T8192_D3072_B8"      trt_triton_head 8192 3072 8
-
-# 7. Tile comparison: T=8192 D=3072 B=1 tile=4 (slowest tile on long shape)
-run_one "cute_T8192_D3072_B1_tile4"  cute            8192 3072 1 4
-
-# 8. Tile comparison: T=8192 D=3072 B=1 tile=8 (middle tile)
-run_one "cute_T8192_D3072_B1_tile8"  cute            8192 3072 1 8
-
-# 9. Crossover: T=1024 D=3072 B=8 tile=4 (cute auto picks tile=4)
-run_one "cute_T1024_D3072_B8_tile4"  cute            1024 3072 8 4
+PROFILE_SET="${KDA_NCU_PROFILE_SET:-round2-early}"
+if [ "${PROFILE_SET}" = "round2-early" ]; then
+    run_one "r2_stream_v4_t128_tile16_T8192_D3072_B1" \
+        cute 8192 3072 1 16 stream 4 128
+elif [ "${PROFILE_SET}" = "round3-early" ]; then
+    # Sweep winners: no-prefetch tanh for contiguous long, tile20 tanh for strided.
+    run_one "r3_v4tile12_tanh_nopf_T8192_D3072_B1" \
+        cute 8192 3072 1 12 stream 4 128 --silu-mode tanh --prefetch 0
+    run_one "r3_v4tile20_tanh_T8192_D4608s_B1" \
+        cute 8192 4608 1 20 stream 4 128 --silu-mode tanh --row-stride 4752 --no-bias
+elif [ "${PROFILE_SET}" = "round3-gs8" ]; then
+    # Group-loads span-8 tile-24 sweep-4 winner, dense and strided long.
+    run_one "r3_v4tile24_gs8_T8192_D3072_B1" \
+        cute 8192 3072 1 24 stream 4 128 --silu-mode tanh --group-loads --group-span 8
+    run_one "r3_v4tile24_gs8_T8192_D4608s_B1" \
+        cute 8192 4608 1 24 stream 4 128 --silu-mode tanh --group-loads --group-span 8 --row-stride 4752 --no-bias
+elif [ "${PROFILE_SET}" = "round3-final" ]; then
+    # Selected single config: stream v4 t128 tile16, group loads span 4,
+    # F32 ring (backend default), tanh SiLU.
+    run_one "r3_selected_T8192_D3072_B1" \
+        cute 8192 3072 1 16 stream 4 128 --silu-mode tanh --group-loads --group-span 4
+    run_one "r3_selected_T8192_D3072_B8" \
+        cute 8192 3072 8 16 stream 4 128 --silu-mode tanh --group-loads --group-span 4
+    run_one "r3_selected_T8192_D4608s_B1" \
+        cute 8192 4608 1 16 stream 4 128 --silu-mode tanh --group-loads --group-span 4 --row-stride 4752 --no-bias
+    run_one "r3_selected_T8192_D4608s_B8" \
+        cute 8192 4608 8 16 stream 4 128 --silu-mode tanh --group-loads --group-span 4 --row-stride 4752 --no-bias
+    run_one "r3_triton_T8192_D4608s_B1" trt_triton_head 8192 4608 1 "" direct 4 128 --row-stride 4752 --no-bias
+    run_one "r3_triton_T8192_D4608s_B8" trt_triton_head 8192 4608 8 "" direct 4 128 --row-stride 4752 --no-bias
+elif [ "${PROFILE_SET}" = "round2-final" ]; then
+    run_one "r2_selected_tile12_T128_D3072_B1" \
+        cute 128 3072 1 12 stream 4 128
+    run_one "r2_selected_tile12_T8192_D3072_B1" \
+        cute 8192 3072 1 12 stream 4 128
+    run_one "r2_selected_tile12_T8192_D3072_B8" \
+        cute 8192 3072 8 12 stream 4 128
+    run_one "r2_triton_T128_D3072_B1" trt_triton_head 128 3072 1
+    run_one "r2_triton_T8192_D3072_B1" trt_triton_head 8192 3072 1
+    run_one "r2_triton_T8192_D3072_B8" trt_triton_head 8192 3072 8
+else
+    echo "[ncu_inner] ERROR: unknown KDA_NCU_PROFILE_SET=${PROFILE_SET}" >&2
+    exit 2
+fi
 
 echo ""
 echo "[ncu_inner] ============ ALL PROFILES COMPLETE ============"

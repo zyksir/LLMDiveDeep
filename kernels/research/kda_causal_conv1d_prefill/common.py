@@ -36,13 +36,19 @@ class Shape:
     bias: bool = True
     activation: str | None = "silu"
     pattern: str = "normal"
+    # Physical row stride of the projected input in elements. None means
+    # contiguous rows (stride == channels). The Kimi-K3 production case is a
+    # [T, 4752] in_proj buffer consumed as projected[:, :4608].
+    row_stride: int | None = None
 
     @property
     def key(self) -> str:
         activation = self.activation or "none"
+        stride_tag = "" if self.row_stride is None else f"_rs{self.row_stride}"
         return (
             f"{self.dtype}_w{self.width}_d{self.channels}_t{self.tokens}"
             f"_b{self.batch}_bias{int(self.bias)}_{activation}_{self.pattern}"
+            f"{stride_tag}"
         )
 
 
@@ -61,7 +67,7 @@ class Problem:
     def clone(self) -> "Problem":
         return Problem(
             shape=self.shape,
-            projected=self.projected.clone(),
+            projected=clone_preserving_view(self.projected),
             weight=self.weight.clone(),
             bias=None if self.bias is None else self.bias.clone(),
             conv_states=self.conv_states.clone(),
@@ -87,6 +93,24 @@ class Backend(Protocol):
     def supports(self, problem: Problem) -> tuple[bool, str]: ...
 
     def prepare(self, problem: Problem) -> Prepared: ...
+
+
+def clone_preserving_view(tensor: torch.Tensor) -> torch.Tensor:
+    """Clone a tensor, preserving strided-view geometry.
+
+    ``Tensor.clone()`` on a non-dense view (for example ``buffer[:, :4608]`` of
+    a ``[T, 4752]`` buffer) silently materializes a contiguous copy, which
+    would drop the production row stride. Clone the underlying storage instead
+    and rebuild the identical view.
+    """
+    base = tensor._base
+    if base is None:
+        return tensor.clone()
+    return base.clone().as_strided(
+        tensor.size(),
+        tensor.stride(),
+        tensor.storage_offset(),
+    )
 
 
 def _uneven_lengths(total: int, batch: int) -> tuple[int, ...]:
@@ -132,7 +156,23 @@ def _pattern_tensors(
         bias = torch.linspace(-3.0, 3.0, shape.channels, device=device, dtype=dtype)
     else:
         raise ValueError(f"unknown input pattern: {shape.pattern}")
-    return projected.contiguous(), weight.contiguous(), bias.contiguous()
+    projected = projected.contiguous()
+    if shape.row_stride is not None:
+        if shape.row_stride < shape.channels:
+            raise ValueError("row_stride must be at least channels")
+        # Mirror production: the in_proj GEMM writes a [T, row_stride] buffer
+        # and the convolution consumes projected[:, :channels]. The padding
+        # columns are filled with large sentinel values so any kernel that
+        # wrongly assumes contiguous rows produces detectably wrong output.
+        buffer = torch.full(
+            (shape.tokens + 5, shape.row_stride),
+            777.0,
+            device=device,
+            dtype=dtype,
+        )
+        buffer[:, : shape.channels] = projected
+        projected = buffer[:, : shape.channels]
+    return projected, weight.contiguous(), bias.contiguous()
 
 
 def make_problem(
@@ -200,8 +240,29 @@ def make_problem(
     )
 
 
+# Kimi-K3 KDA production geometry: packed QKV (3 x 1536, num_heads=12,
+# head_dim=128) consumed as a row-strided view of the [T, 4752] in_proj output.
+PRODUCTION_CHANNELS = 4608
+PRODUCTION_ROW_STRIDE = 4752
+
+
+def production_shape(tokens: int, batch: int, *, bias: bool = False, width: int = 4,
+                     dtype: str = "bf16", pattern: str = "normal") -> Shape:
+    return Shape(
+        dtype,
+        width,
+        PRODUCTION_CHANNELS,
+        tokens,
+        batch,
+        bias=bias,
+        activation="silu",
+        pattern=pattern,
+        row_stride=PRODUCTION_ROW_STRIDE,
+    )
+
+
 def full_matrix() -> list[Shape]:
-    return [
+    dense = [
         Shape(dtype, width, channels, tokens, batch)
         for dtype in ("fp16", "bf16")
         for width in (2, 3, 4)
@@ -209,12 +270,34 @@ def full_matrix() -> list[Shape]:
         for tokens in (128, 1024, 8192)
         for batch in (1, 8)
     ]
+    strided = [
+        production_shape(tokens, batch, width=width, dtype=dtype)
+        for dtype in ("fp16", "bf16")
+        for width in (2, 3, 4)
+        for tokens in (128, 1024, 8192)
+        for batch in (1, 8)
+    ]
+    return dense + strided
 
 
 def main_performance_matrix() -> list[Shape]:
-    return [
+    dense = [
         Shape("bf16", 4, channels, tokens, batch)
         for channels in (1536, 3072)
+        for tokens in (128, 1024, 8192)
+        for batch in (1, 8)
+    ]
+    strided = [
+        production_shape(tokens, batch)
+        for tokens in (128, 1024, 8192)
+        for batch in (1, 8)
+    ]
+    return dense + strided
+
+
+def production_performance_matrix() -> list[Shape]:
+    return [
+        production_shape(tokens, batch)
         for tokens in (128, 1024, 8192)
         for batch in (1, 8)
     ]
@@ -249,6 +332,34 @@ def correctness_cases() -> list[tuple[str, Problem]]:
                 make_problem(
                     Shape("bf16", 4, 1536, 128, 8, bias=False, activation=None),
                     seed=35,
+                ),
+            ),
+            # Kimi-K3 production strided-view coverage (D=4608, stride 4752).
+            (
+                "bf16_w4_strided_prod_normal",
+                make_problem(production_shape(128, 8), seed=41),
+            ),
+            (
+                "bf16_w4_strided_prod_bias",
+                make_problem(production_shape(128, 8, bias=True), seed=42),
+            ),
+            (
+                "bf16_w4_strided_prod_adversarial",
+                make_problem(production_shape(128, 8, pattern="adversarial"), seed=43),
+            ),
+            (
+                "bf16_w4_strided_prod_short",
+                make_problem(production_shape(16, 8), seed=44, short=True),
+            ),
+            (
+                "bf16_w4_strided_prod_padded",
+                make_problem(production_shape(128, 8), seed=45, padded=True),
+            ),
+            (
+                "fp16_w4_strided_prod_normal",
+                make_problem(
+                    production_shape(128, 8, dtype="fp16"),
+                    seed=46,
                 ),
             ),
         ]

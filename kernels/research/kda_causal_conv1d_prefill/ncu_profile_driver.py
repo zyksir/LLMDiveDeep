@@ -35,6 +35,29 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--B", type=int, required=True, help="batch size (1 or 8)")
     p.add_argument("--W", type=int, default=4, help="conv width")
     p.add_argument("--tile", type=int, default=None, help="CuTe token tile (None=auto)")
+    p.add_argument(
+        "--algorithm",
+        choices=("direct", "stream"),
+        default="direct",
+        help="CuTe algorithm",
+    )
+    p.add_argument("--vector-width", type=int, default=4)
+    p.add_argument("--threads", type=int, default=128)
+    p.add_argument("--silu-mode", choices=("expdiv", "tanh"), default="expdiv")
+    p.add_argument("--prefetch", type=int, choices=(0, 1), default=1)
+    p.add_argument("--group-loads", action="store_true")
+    p.add_argument("--group-span", type=int, choices=(4, 8, 12), default=4)
+    p.add_argument(
+        "--row-stride",
+        type=int,
+        default=None,
+        help="physical input row stride in elements (production: 4752)",
+    )
+    p.add_argument(
+        "--no-bias",
+        action="store_true",
+        help="use the production no-bias variant",
+    )
     p.add_argument("--warmup", type=int, default=10, help="warmup iterations (unprofiled)")
     p.add_argument("--iterations", type=int, default=3, help="profiled iterations")
     return p.parse_args()
@@ -54,8 +77,23 @@ def main() -> None:
         os.environ["KDA_CUTE_TOKEN_TILE"] = str(args.tile)
     else:
         os.environ["KDA_CUTE_TOKEN_TILE"] = "auto"
+    os.environ["KDA_CUTE_ALGORITHM"] = args.algorithm
+    os.environ["KDA_CUTE_VECTOR_WIDTH"] = str(args.vector_width)
+    os.environ["KDA_CUTE_THREADS"] = str(args.threads)
+    os.environ["KDA_CUTE_SILU_MODE"] = args.silu_mode
+    os.environ["KDA_CUTE_PREFETCH"] = str(args.prefetch)
+    os.environ["KDA_CUTE_GROUP_LOADS"] = "1" if args.group_loads else "0"
+    os.environ["KDA_CUTE_GROUP_SPAN"] = str(args.group_span)
 
-    shape = Shape("bf16", args.W, args.D, args.T, args.B)
+    shape = Shape(
+        "bf16",
+        args.W,
+        args.D,
+        args.T,
+        args.B,
+        bias=not args.no_bias,
+        row_stride=args.row_stride,
+    )
     problem = make_problem(shape)
 
     # Load backend
@@ -68,7 +106,12 @@ def main() -> None:
         sys.exit(1)
 
     # Prepare (includes JIT compilation for CuTe; Triton lazily compiles on first call)
-    print(f"[PROFILE_DRIVER] Preparing backend={args.backend} T={args.T} D={args.D} B={args.B} tile={args.tile}", flush=True)
+    print(
+        f"[PROFILE_DRIVER] Preparing backend={args.backend} T={args.T} "
+        f"D={args.D} B={args.B} algorithm={args.algorithm} tile={args.tile} "
+        f"vector_width={args.vector_width} threads={args.threads}",
+        flush=True,
+    )
     prepared = backend.prepare(problem)
 
     # First call to trigger Triton JIT compilation (if applicable)
