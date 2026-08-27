@@ -827,6 +827,9 @@ class Dsv4Indexer(DsaIndexer):
     top-k, the resulting indices live in *compressor token space* and must be
     expanded back to raw token positions; we leave that to the sparse-FA
     step downstream.
+
+    The full DeepSeek-V4 CSA / HCA *layer* (overlapping compressor, SWA
+    branch, grouped o_proj, HCA with no indexer) is `dsv4_layer.py`.
     """
 
     def __init__(self, spec: IndexerSpec, dtype: torch.dtype = torch.bfloat16):
