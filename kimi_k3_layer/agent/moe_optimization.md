@@ -72,20 +72,23 @@ order). `baseline` and `final` are absolute; per row,
 baseline − (sum of cells) = final. **Bold** = largest saving in the
 row. Raw CSVs `local_results/ablate_moe_contributions_tp8*.csv`.
 
-Decode (1..128 measured earlier today under the identical decode code;
-256 re-measured after the cap extension):
+Decode (TP-8 on GB300/sm103a, authenticated rc19 production image;
+unchanged TRT KimiK3MoE baseline, BF16 I/O, MXFP4/MXFP8 experts, CUDA
+graph timing, 100 iterations × 8 inputs). B=1..128 follows the current
+decode plan; B=256 is the same decode ladder measured with the cap
+temporarily extended from the current B300 boundary of 128:
 
 | B | baseline | skeleton (pre-route + packed AR) | +fc1 shard (col-AG+quant) | +fused front (dual-out) | +radix routing | +route side stream | +measured tail | final | total |
 |---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| 1 | 75.2 | +0.5 | +2.1 | **+10.4** | +6.2 | +1.6 | +9.8 | 44.6 | **+40.6%** |
-| 2 | 78.7 | −0.1 | +8.6 | +4.1 | +8.2 | +1.9 | **+10.3** | 45.6 | **+42.0%** |
-| 4 | 80.2 | +0.9 | +6.7 | +3.4 | +8.2 | +2.4 | **+10.6** | 48.1 | **+40.0%** |
-| 8 | 81.3 | +0.5 | +4.8 | +4.2 | +8.2 | +3.8 | **+9.5** | 50.4 | **+38.0%** |
-| 16 | 90.7 | +1.9 | +4.9 | +4.7 | +7.8 | +3.6 | **+8.5** | 59.3 | **+34.6%** |
-| 32 | 104.8 | +1.9 | +6.9 | +4.6 | +8.0 | +4.0 | **+11.0** | 68.5 | **+34.6%** |
-| 64 | 115.7 | +1.2 | +1.4 | +3.8 | +8.5 | +5.7 | **+14.0** | 81.1 | **+29.9%** |
-| 128 | 130.0 | −0.3 | +0.2 | +5.1 | +8.5 | +5.2 | **+11.2** | 100.1 | **+23.0%** |
-| 256 | 169.3 | −1.2 | +6.4 | +4.0 | +1.7 | +3.5 | **+23.1** | 131.8 | **+22.2%** |
+| 1 | 71.2 | −16.5 | +4.5 | +3.5 | **+12.3** | +1.4 | +8.5 | 57.4 | **+19.4%** |
+| 2 | 80.1 | −16.8 | +4.2 | +1.3 | **+14.5** | +1.4 | +9.2 | 66.2 | **+17.3%** |
+| 4 | 93.3 | −15.2 | +2.8 | −0.1 | **+16.3** | +2.6 | +8.5 | 78.3 | **+16.1%** |
+| 8 | 118.4 | −10.7 | +3.4 | +1.7 | **+14.0** | +4.0 | +8.4 | 97.7 | **+17.5%** |
+| 16 | 151.4 | −12.2 | +3.8 | +2.9 | **+14.1** | +3.6 | +9.3 | 130.0 | **+14.2%** |
+| 32 | 198.4 | −17.4 | +5.0 | +4.3 | **+14.4** | +3.7 | +13.2 | 175.0 | **+11.8%** |
+| 64 | 254.9 | −10.6 | +3.6 | +1.4 | +14.0 | +5.1 | **+15.4** | 226.0 | **+11.3%** |
+| 128 | 355.7 | +4.7 | +1.8 | +2.4 | **+15.5** | +4.6 | +12.9 | 313.9 | **+11.8%** |
+| 256 | 424.1 | +5.7 | +5.0 | −4.5 | **+20.4** | +2.5 | +7.7 | 387.3 | **+8.7%** |
 
 Prefill (fresh ladder matching today's shipped plan; 512–1024 rows end
 at their plan config FULL+FC2_SHARD, larger rows continue through the
@@ -108,19 +111,21 @@ vs this table's.)
 
 What the waterfall says, per strategy:
 
-- **Decode: the measured tail is the largest single win**
-  (+8.5..+23.1 us at every size): fc2-shard at B<=8 (1/world fc2
-  weight read), multimem full-fc2 at B>=16 (no output collective; the
-  shared AR reduced switch-side on the overlap stream).
+- **Decode: radix routing is the largest rung at most sizes**
+  (+12.3..+20.4 us). The measured tail remains substantial
+  (+7.7..+15.4 us) and is the largest rung at B=64: fc2-shard at B<=8
+  (1/world fc2 weight read), multimem full-fc2 at B>=16 (no output
+  collective; the shared AR reduced switch-side on the overlap stream).
 - **Prefill: the fc2-shard tail is the dominant win everywhere**
   (+21.9 at 512 growing to +1015.8 at 16K — it deletes 7/8 of the fc2
   FLOPs for the same wire), with the overlapped-gather fc1 shard
   second from 2048 up (+13.4..+352.5 at this rung, more after the
   multimem + gather_quant upgrades).
-- **radix routing**: uniform +6..+8.5 us at decode, growing to
+- **radix routing**: +12.3..+20.4 us at decode, growing to
   +184 us at 16K (vs REFERENCE noaux_tc routing).
-- **fused dual-out front** +3.4..+10.4 us; **route side stream**
-  +1.6..+5.7 us at decode.
+- **fused dual-out front** −4.5..+4.3 us; **route side stream**
+  +1.4..+5.1 us at decode. The skeleton is costly at B=1..64
+  (−10.6..−17.4 us) but saves +4.7/+5.7 us at B=128/256.
 - Rung-conditional negatives (verified 3x same-process,
   `local_debug/moe_prefill_axis_probe.py`): overlap_shared is
   −19..−20 us at 8K/16K in the SKELETON rung (full fc1 + reference

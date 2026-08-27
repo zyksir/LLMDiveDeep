@@ -184,7 +184,7 @@ def _search_size(
             iterations, n_inputs, max_decode, seed,
             reference, baseline_us, rnd, axis, val_label, rows)
 
-    # all-off is identical to baseline_forward; reuse already-timed baseline.
+    # All-off is identical to the reference class; reuse its timing.
     if rank == 0:
         rows.append({
             "tokens": tokens, "round": 0, "axis": "init", "value": "all_off",
@@ -356,7 +356,10 @@ def main() -> None:
 
     import torch.distributed as dist
     from tensorrt_llm._torch.utils import AuxStreamType
-    from kimi_k3_layer.b10_kimi_k3_moe_layer import B10KimiK3MoELayer
+    from kimi_k3_layer.b10_kimi_k3_moe_layer import (
+        B10KimiK3MoELayer,
+        KimiK3MoEReference,
+    )
     from kimi_k3_layer.config import HIDDEN
 
     sizes = tuple(sorted(set(_sizes(args.sizes))))
@@ -403,7 +406,8 @@ def main() -> None:
 
         def ref_fn(index):
             with torch.no_grad():
-                ref_box["output"] = layer.baseline_forward(inputs[index])
+                ref_box["output"] = KimiK3MoEReference.forward(
+                    layer, inputs[index])
 
         if rank == 0:
             print(f"\n{'='*60}", flush=True)

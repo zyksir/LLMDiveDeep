@@ -54,6 +54,7 @@ if str(_ROOT) not in sys.path:
 from kimi_k3_layer.bench_b10_kimi_k3_moe_layer import (  # noqa: E402
     _build_collectives,
     _capture,
+    _configure_nccl_graph_policy,
     _graph_iters,
     _tie_aware_error,
     _time_graph,
@@ -127,6 +128,7 @@ def ladder_for(tokens: int):
 
 
 def main() -> None:
+    _configure_nccl_graph_policy()
     parser = argparse.ArgumentParser()
     parser.add_argument("--sizes", default="1,8,32,128")
     parser.add_argument("--iters", type=int, default=100)
@@ -142,6 +144,7 @@ def main() -> None:
     from kimi_k3_layer.b10_kimi_k3_moe_layer import (
         B10KimiK3MoELayer,
         DECODE_MAX_TOKENS,
+        KimiK3MoEReference,
         LayerMode,
         k3_model_config,
     )
@@ -191,8 +194,8 @@ def main() -> None:
 
         def reference_fn(index):
             with torch.no_grad():
-                reference_box["output"] = layer.baseline_forward(
-                    inputs[index])
+                reference_box["output"] = KimiK3MoEReference.forward(
+                    layer, inputs[index])
 
         graph = _capture(reference_fn, iterations, world)
         previous_us = reference_us = _time_graph(

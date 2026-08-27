@@ -21,6 +21,14 @@ PREFILL_SIZES = (512, 1024, 2048, 4096, 8192, 16384)
 GRAPH_TOKEN_BUDGET = 98_304
 
 
+def _configure_nccl_graph_policy() -> None:
+    """Use the serialized NCCL CUDA-graph policy for these benchmarks."""
+    # NCCL 2.30+ supports stream ordering off only when graph mixing is off.
+    # These benchmarks serialize graph replays and do not need mixed launches.
+    os.environ["NCCL_GRAPH_MIXING_SUPPORT"] = "0"
+    os.environ["NCCL_GRAPH_STREAM_ORDERING"] = "0"
+
+
 def init_weights(moe, world: int, rank: int, seed: int = 0) -> None:
     """Initialize deterministic global weights, then select this rank's shard."""
     from kimi_k3_layer.config import (
@@ -388,6 +396,7 @@ def _build_collectives(world: int, sizes, max_decode: int):
 
 
 def main() -> None:
+    _configure_nccl_graph_policy()
     parser = argparse.ArgumentParser()
     parser.add_argument("--sizes", default="all",
                         help="decode, prefill, all, or comma-separated tokens")
@@ -434,6 +443,7 @@ def main() -> None:
         B10KimiK3MoELayer,
         DECODE_MAX_TOKENS,
         ExperimentConfig,
+        KimiK3MoEReference,
         LayerMode,
         k3_model_config,
         measured_config,
@@ -466,10 +476,9 @@ def main() -> None:
     # K3_NEW_CLASS selects what the "new" label times: the full B10 layer
     # (default), pure stock (sanity: new == baseline), or the stock-plus
     # ladder (K3_FRONT_STAGES picks the pre-expert stages).
-    from kimi_k3_layer.b10_kimi_k3_moe_layer import (KimiK3StockMoE,
-                                                     KimiK3StockPlusFront)
+    from kimi_k3_layer.b10_kimi_k3_moe_layer import KimiK3StockPlusFront
     _layer_cls = {
-        "stock": KimiK3StockMoE,
+        "stock": KimiK3MoEReference,
         "stockplus": KimiK3StockPlusFront,
     }.get(os.environ.get("K3_NEW_CLASS", ""), B10KimiK3MoELayer)
     layer = _layer_cls(
@@ -481,7 +490,8 @@ def main() -> None:
         mode=LayerMode(args.mode),
     ).cuda()
     init_weights(layer, world, rank)
-    layer.init_optimized(max_batch=max_decode, collectives=collectives)
+    if isinstance(layer, B10KimiK3MoELayer):
+        layer.init_optimized(max_batch=max_decode, collectives=collectives)
 
     rows = []
     for tokens in sizes:
@@ -527,8 +537,8 @@ def main() -> None:
         def reference_fn(index):
             _inject_skew()
             with torch.no_grad():
-                reference_box["output"] = layer.baseline_forward(
-                    _chained_input(index, reference_box))
+                reference_box["output"] = KimiK3MoEReference.forward(
+                    layer, _chained_input(index, reference_box))
 
         reference_graph = _capture(reference_fn, iterations, world)
         reference_us = _time_graph(

@@ -13,7 +13,7 @@ N (default 4) MoE layers with an attention-residue proxy between them:
     h  = h + moe                             (MoE residual)
 
 Modes (--arm):
-    stock      KimiK3StockMoE chain (production path)
+    stock      KimiK3MoEReference chain (production path)
     b10        B10 deploy chain
     b10_fused  B10 chain with the MoE residual+norm FUSED into the tail
                AR (comm.allreduce_norm(residual=...)): the "overlap the
@@ -62,7 +62,7 @@ def main() -> None:
     from kimi_k3_layer.bench_b10_kimi_k3_moe_layer import (
         _build_collectives, init_weights)
     from kimi_k3_layer.b10_kimi_k3_moe_layer import (
-        B10KimiK3MoELayer, KimiK3StockMoE, LayerMode, k3_model_config)
+        B10KimiK3MoELayer, KimiK3MoEReference, LayerMode, k3_model_config)
     from kimi_k3_layer.config import HIDDEN, MOE_LATENT
 
     sizes = tuple(int(s) for s in args.sizes.split(","))
@@ -78,10 +78,13 @@ def main() -> None:
             aux = {k: torch.cuda.Stream() for k in AuxStreamType}
             layer = cls(config, layer_idx=0, aux_stream_dict=aux,
                         reduce_output=world > 1, collectives=collectives,
-                        mode=LayerMode("deploy")).cuda()
+                        **({"mode": LayerMode("deploy")}
+                           if issubclass(cls, B10KimiK3MoELayer)
+                           else {})).cuda()
             init_weights(layer, world, rank, seed=100 + i)
-            layer.init_optimized(max_batch=max(sizes),
-                                 collectives=collectives)
+            if isinstance(layer, B10KimiK3MoELayer):
+                layer.init_optimized(max_batch=max(sizes),
+                                     collectives=collectives)
             chain.append(layer)
         return chain
 
@@ -97,7 +100,7 @@ def main() -> None:
 
     arms = {}
     if "stock" in args.arms:
-        arms["stock"] = (build_chain(KimiK3StockMoE), False)
+        arms["stock"] = (build_chain(KimiK3MoEReference), False)
     if "b10" in args.arms.replace("b10_fused", ""):
         arms["b10"] = (build_chain(B10KimiK3MoELayer), False)
     if "b10_fused" in args.arms:

@@ -30,19 +30,17 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, replace
 from enum import Enum
+from types import SimpleNamespace
 from typing import Any
 
 import torch
 from transformers import PretrainedConfig
 
 from tensorrt_llm._torch.model_config import ModelConfig
-from tensorrt_llm._torch.models.modeling_deepseekv3 import DeepseekV3Gate
-from tensorrt_llm._torch.models.modeling_nemotron_h import NemotronHMOE
-from tensorrt_llm._torch.modules.fused_moe import MoEWeightLoadingMode, create_moe
-from tensorrt_llm._torch.modules.fused_moe.interface import ActivationType
-from tensorrt_llm._torch.modules.gated_mlp import GatedMLP
+from tensorrt_llm._torch.models.modeling_kimi_k3 import (
+    KimiK3MoE as TrtKimiK3MoE,
+)
 from tensorrt_llm._torch.modules.multi_stream_utils import maybe_execute_in_parallel
-from tensorrt_llm._torch.modules.rms_norm import RMSNorm
 from tensorrt_llm._torch.utils import AuxStreamType, EventType
 from tensorrt_llm.mapping import Mapping
 from tensorrt_llm.models.modeling_utils import QuantConfig
@@ -70,21 +68,8 @@ from kimi_k3_layer.config import (
     TOP_K,
     TOPK_GROUP,
 )
-from kimi_k3_layer.b10_kimi_k3_kda_layer import _graft
-
-SiTUAndMul = _graft(
-    "tensorrt_llm._torch.modules.situ",
-    "_torch/modules/situ.py",
-).SiTUAndMul
 
 SMALL_BATCH_MAX_TOKENS = 32
-
-# The bench baseline must match PRODUCTION stock (modeling_kimi_k3 with
-# TRTLLM_KIMI_B10_MOE=0), whose decode tail is the fused
-# finalize+AR+rmsnorm+concat kernel (f17ea3ab32) — the packed-AR reference
-# this bench originally used is ~21 us/layer slower at B=8 and overstated
-# every decode gain. K3_STOCK_BASELINE=0 restores the old reference.
-_STOCK_BASELINE = os.environ.get("K3_STOCK_BASELINE", "1") == "1"
 
 # Radix emits the trtllm-gen packed routing directly (one pack launch
 # replacing the bf16 copy + the op backend's eager lshift/or pair,
@@ -287,6 +272,7 @@ def k3_pretrained_config() -> PretrainedConfig:
     cfg.n_group = N_GROUP
     cfg.topk_group = TOPK_GROUP
     cfg.routed_scaling_factor = ROUTED_SCALING
+    cfg.latent_moe_use_norm = True
     cfg.mlp_bias = False
     cfg.rms_norm_eps = RMS_EPS
     # Match the released checkpoint (moonshotai/Kimi-K3 config.json) and
@@ -312,38 +298,25 @@ def k3_model_config(rank: int, world: int,
         moe_ep_size=world,
         moe_tp_size=1,
     )
+    # Keep the replicated latent projections and shared experts in BF16 while
+    # selecting the released checkpoint's packed MXFP4 format for routed
+    # experts. NemotronHMOE consumes this per-expert override directly.
+    expert_quant = QuantConfig(
+        quant_algo=QuantAlgo.W4A8_MXFP4_MXFP8,
+    )
     return ModelConfig(
         pretrained_config=k3_pretrained_config(),
         mapping=mapping,
+        quant_config=QuantConfig(),
+        quant_config_dict={
+            "model.layers.0.mixer.experts.": expert_quant,
+        },
         moe_backend=moe_backend,
         allreduce_strategy=os.environ.get("BENCH_ALLREDUCE_STRATEGY", "AUTO"),
     )
 
-
-def _force_flashinfer_op_backend(backend) -> None:
-    """Select FlashInfer and restore scales flattened by TRT-LLM 1.3."""
-    from tensorrt_llm._torch.modules.fused_moe.moe_op_backend import get_op_backend
-
-    flashinfer = get_op_backend("flashinfer")
-    if not getattr(flashinfer, "_kimi_k3_2d_scale_compat", False):
-        original = flashinfer.run_fp4_block_scale_moe
-
-        def run_2d_scale(router_logits, routing_bias, hidden_states,
-                         hidden_states_scale, *args, **kwargs):
-            if hidden_states_scale is not None and hidden_states_scale.dim() == 1:
-                hidden_states_scale = hidden_states_scale.view(
-                    hidden_states.shape[0], -1)
-            return original(router_logits, routing_bias, hidden_states,
-                            hidden_states_scale, *args, **kwargs)
-
-        flashinfer.run_fp4_block_scale_moe = run_2d_scale
-        flashinfer._kimi_k3_2d_scale_compat = True
-    backend.use_flashinfer = True
-    backend.op_backend = flashinfer
-
-
-class KimiK3MoEReference(NemotronHMOE):
-    """TRT-LLM Kimi-K3 reference whose TP reduction uses Collectives."""
+class KimiK3MoEReference(TrtKimiK3MoE):
+    """Thin benchmark adapter around TRT-LLM's production Kimi-K3 MoE."""
 
     def __init__(
         self,
@@ -355,73 +328,11 @@ class KimiK3MoEReference(NemotronHMOE):
         collectives=None,
     ) -> None:
         super().__init__(
-            replace(model_config, moe_backend="CUTLASS"),
+            model_config,
             layer_idx=layer_idx,
             aux_stream_dict=aux_stream_dict,
             reduce_output=reduce_output,
-        )
-        config = model_config.pretrained_config
-        self.activation_type = ActivationType.Swiglu
-        self.experts = None
-        self.gate = DeepseekV3Gate(
-            self.hidden_size,
-            self.num_experts,
-            top_k=self.top_k,
-            n_group=self.moe_n_group,
-            topk_group=config.topk_group,
-            routed_scaling_factor=self.routed_scaling_factor,
-            dtype=config.torch_dtype,
-            fuse_routing_kernel=True,
-            apply_routing=False,
-            moe_backend="TRTLLM",
-        )
-        experts_config = replace(
-            model_config,
-            quant_config=QuantConfig(
-                quant_algo=QuantAlgo.W4A8_MXFP4_MXFP8),
-            moe_backend="TRTLLM",
-        )
-        model_config.extra_attrs.get("moe_layers", {}).pop(str(layer_idx), None)
-        self.experts = create_moe(
-            routing_method=self.gate.routing_method,
-            num_experts=self.num_experts,
-            hidden_size=self.moe_hidden_size,
-            intermediate_size=self.moe_intermediate_size,
-            aux_stream_dict=aux_stream_dict,
-            dtype=config.torch_dtype,
-            reduce_results=False,
-            model_config=experts_config,
-            layer_idx=layer_idx,
-            weight_loading_mode=MoEWeightLoadingMode.VANILLA,
-            bias=self.mlp_bias,
-            activation_type=ActivationType.Swiglu,
-        )
-        _force_flashinfer_op_backend(
-            getattr(self.experts, "backend", self.experts))
-
-        # The inherited transport is deliberately not part of this layer.
-        self.allreduce = None
-        shared_activation = SiTUAndMul(
-            beta=config.activation_situ_beta,
-            linear_beta=config.activation_situ_linear_beta,
-        )
-        self.shared_experts = GatedMLP(
-            hidden_size=config.hidden_size,
-            intermediate_size=(
-                config.moe_shared_expert_intermediate_size
-                * config.n_shared_experts),
-            bias=self.mlp_bias,
-            activation=shared_activation,
-            dtype=config.torch_dtype,
-            config=model_config,
-            layer_idx=layer_idx,
-            reduce_output=False,
-            is_shared_expert=True,
-        )
-        self.latent_norm = RMSNorm(
-            hidden_size=self.moe_hidden_size,
-            eps=config.rms_norm_eps,
-            dtype=config.torch_dtype,
+            defer_shared_output_add=False,
         )
         self._collectives = collectives
 
@@ -436,139 +347,18 @@ class KimiK3MoEReference(NemotronHMOE):
             self._collectives = Collectives(None, 0)
         return self._collectives
 
-    def _stock_epilogue_cap(self) -> int:
-        """Lazy MoEAllReduce + native op backend, sized exactly like
-        production (modeling_nemotron_h can_fuse_moe_epilogue path)."""
-        if getattr(self, "_moe_allreduce", None) is None:
-            from tensorrt_llm._torch.distributed.ops import MoEAllReduce
-            from tensorrt_llm._torch.modules.fused_moe.moe_op_backend import (
-                get_op_backend)
-            self._moe_allreduce = MoEAllReduce(self.mapping)
-            self._max_fused_moe_tokens = (
-                self._moe_allreduce.max_tokens_for_message(
-                    self.moe_hidden_size + self.hidden_dim,
-                    self.latent_norm.weight.dtype))
-        return self._max_fused_moe_tokens
-
-    def stock_forward(self, hidden_states: torch.Tensor,
-                      attn_metadata=None, **kwargs) -> torch.Tensor:
-        """The PRODUCTION decode path (modeling_kimi_k3 with
-        TRTLLM_KIMI_B10_MOE=0): experts with do_finalize=False on the
-        NATIVE op backend, then ONE fused finalize+AR+rmsnorm+concat
-        kernel, then fc2_latent_proj. Trace-aligned against
-        /node-storage/var/traces/trt-decode-stock-*. Beyond the fused
-        epilogue cap production falls back to the packed [latent|shared]
-        AR — which is exactly baseline_forward below."""
-        original_shape = hidden_states.shape
-        h = hidden_states.view(-1, self.hidden_dim)
-        if h.shape[0] > self._stock_epilogue_cap():
-            return self.baseline_forward(hidden_states, attn_metadata,
-                                         **kwargs)
-        all_rank_tokens = kwargs.get(
-            "all_rank_num_tokens",
-            getattr(attn_metadata, "all_rank_num_tokens", None),
-        )
-        # NOTE: no op-backend swap. Production stock also runs the
-        # FlashInfer op backend here (TRTLLMGenFusedMoE picks it whenever
-        # _check_flashinfer_backend_support passes — SiTU on sm_103 needs
-        # it; native trtllm-gen has no unfused-SiTU tile-8 kernel).
-
-        def routed_branch():
-            logits = _bench_doctor_logits(self.gate(h))
-            latent = self.fc1_latent_proj(h)
-            return self.experts(
-                latent,
-                logits,
-                all_rank_num_tokens=all_rank_tokens,
-                use_dp_padding=False,
-                do_finalize=False,
-            )
-
-        def shared_branch():
-            return self.shared_experts(h)
-
-        routed, shared = maybe_execute_in_parallel(
-            routed_branch,
-            shared_branch,
-            self.event_dict[EventType.Main],
-            self.event_dict[EventType.MoeShared],
-            self.aux_stream_shared,
-            disable_on_compile=True,
-        )
-        fc2_output, expert_scale_factor, expanded_idx = routed
-        routed_latent, shared_red = (
-            self._moe_allreduce.finalize_allreduce_rmsnorm_concat(
-                fc2_output,
-                shared.view(-1, self.hidden_dim),
-                self.latent_norm.weight,
-                expanded_idx,
-                expert_scale_factor,
-                self.latent_norm.variance_epsilon,
-            ))
-        # BENCH-BASELINE FIX (2026-08-24): the trtllm Linear's cublasLt
-        # pick for fc2 in THIS harness is a 35.2 us NNT[112] variant while
-        # production serving runs a ~10-12 us splitK class (torch.matmul
-        # L2-cold: 11.0 us — same class). The Linear wrapper's bad pick
-        # inflated the stock baseline ~24 us/layer at bs8 and with it
-        # every layer-gain figure. Route through torch.matmul to match
-        # the REAL production cost. K3_BENCH_FC2_LINEAR=1 restores the
-        # old (inflated) baseline for table archaeology.
-        if os.environ.get("K3_BENCH_FC2_LINEAR", "0") == "1":
-            routed_out = self.fc2_latent_proj(
-                routed_latent.view(-1, self.moe_hidden_size))
-        else:
-            routed_out = torch.matmul(
-                routed_latent.view(-1, self.moe_hidden_size),
-                self.fc2_latent_proj.weight.t())
-        return (shared_red.view(-1, self.hidden_dim) + routed_out).view(
-            original_shape)
-
-    def baseline_forward(self, hidden_states: torch.Tensor,
-                         attn_metadata=None, **kwargs) -> torch.Tensor:
-        """The one reference path, also used by EXP all-off."""
-        original_shape = hidden_states.shape
-        h = hidden_states.view(-1, self.hidden_dim)
-        # K3_STOCK_BASELINE=1 (default): at decode sizes the production
-        # baseline is the fused finalize+AR epilogue, not the packed AR.
-        # =0 restores the pre-f17ea3ab32 reference for old-table compat.
-        if _STOCK_BASELINE and h.shape[0] <= self._stock_epilogue_cap():
-            return self.stock_forward(hidden_states, attn_metadata, **kwargs)
-        all_rank_tokens = kwargs.get(
-            "all_rank_num_tokens",
-            getattr(attn_metadata, "all_rank_num_tokens", None),
-        )
-
-        def routed_branch():
-            logits = self.gate(h)
-            latent = self.fc1_latent_proj(h)
-            return self.experts(
-                latent,
-                logits,
-                all_rank_num_tokens=all_rank_tokens,
-                use_dp_padding=False,
-            )
-
-        def shared_branch():
-            return self.shared_experts(h)
-
-        routed, shared = maybe_execute_in_parallel(
-            routed_branch,
-            shared_branch,
-            self.event_dict[EventType.Main],
-            self.event_dict[EventType.MoeShared],
-            self.aux_stream_shared,
-            disable_on_compile=True,
-        )
-        routed = routed.view(-1, self.moe_hidden_size)
-        packed = self._comm().all_reduce(torch.cat((routed, shared), dim=-1))
-        routed, shared = torch.split(
-            packed, (self.moe_hidden_size, self.hidden_dim), dim=-1)
-        return (shared + self.fc2_latent_proj(
-            self.latent_norm(routed))).view(original_shape)
-
     def forward(self, hidden_states: torch.Tensor, attn_metadata=None,
                 **kwargs) -> torch.Tensor:
-        return self.baseline_forward(hidden_states, attn_metadata, **kwargs)
+        """Run TRT-LLM's current Kimi-K3 MoE as the sole reference."""
+        if attn_metadata is None:
+            attn_metadata = SimpleNamespace(
+                all_rank_num_tokens=kwargs.get("all_rank_num_tokens"),
+            )
+        return super().forward(
+            hidden_states,
+            attn_metadata,
+            **kwargs,
+        )
 
 
 @dataclass
@@ -654,7 +444,7 @@ class B10KimiK3MoELayer(KimiK3MoEReference):
         self._shared_gate_up = self.shared_experts.gate_up_proj.weight.data
         self._shared_down = self.shared_experts.down_proj.weight.data
         # Vendored stride-aware SiTU (kimi_k3.kernels.situ_and_mul):
-        # bit-exact with the grafted trt-llm SiTUAndMul, but consumes
+        # bit-exact with TRT-LLM's SiTUAndMul, but consumes
         # the fuse3 front's merged[:, width:] slice directly instead
         # of paying its .contiguous() copy.
         act = self.shared_experts.activation
@@ -1067,15 +857,15 @@ class B10KimiK3MoELayer(KimiK3MoEReference):
             # finalize+AR+rmsnorm+concat kernel -> full fc2_latent_proj.
             # Stacks the B10 front/routing/side-stream wins on top of the
             # stock tail instead of replacing it with the packed AR.
-            if batch > self._stock_epilogue_cap():
+            if batch > self.max_fused_moe_tokens:
                 raise RuntimeError(
                     "FUSED_FINALIZE_AR tail beyond the fused-epilogue cap "
-                    f"({self._max_fused_moe_tokens} tokens)")
+                    f"({self.max_fused_moe_tokens} tokens)")
             fc2_output, expert_scale_factor, expanded_idx = self._experts(
                 latent, ids_scales, expert_backend, do_finalize=False)
             shared = self._join_shared(shared_ref).view(-1, self.hidden_dim)
             routed_latent, shared_red = (
-                self._moe_allreduce.finalize_allreduce_rmsnorm_concat(
+                self.moe_allreduce.finalize_allreduce_rmsnorm_concat(
                     fc2_output,
                     shared,
                     self.latent_norm.weight,
@@ -1258,12 +1048,14 @@ class B10KimiK3MoELayer(KimiK3MoEReference):
     def forward(self, hidden_states: torch.Tensor, attn_metadata=None,
                 **kwargs) -> torch.Tensor:
         if not self._optimized:
-            return self.baseline_forward(
+            return KimiK3MoEReference.forward(
+                self,
                 hidden_states, attn_metadata, **kwargs)
         tokens = hidden_states.view(-1, self.hidden_dim).shape[0]
         cfg = self._config(tokens)
         if not cfg.enabled:
-            return self.baseline_forward(
+            return KimiK3MoEReference.forward(
+                self,
                 hidden_states, attn_metadata, **kwargs)
         if tokens <= min(DECODE_MAX_TOKENS, self._max_batch):
             return self._decode(
@@ -1272,16 +1064,6 @@ class B10KimiK3MoELayer(KimiK3MoEReference):
         if cfg.prefill_fc1 is PrefillFC1.SHARDED:
             return self._prefill_sharded(hidden_states, cfg)
         return self._prefill_full(hidden_states, cfg)
-
-
-class KimiK3StockMoE(B10KimiK3MoELayer):
-    """Pure production baseline: forward IS the stock serving path
-    (experts do_finalize=False -> fused finalize+AR+rmsnorm+concat ->
-    full fc2_latent_proj), two streams, PDL tail overlap intact."""
-
-    def forward(self, hidden_states: torch.Tensor, attn_metadata=None,
-                **kwargs) -> torch.Tensor:
-        return self.stock_forward(hidden_states, attn_metadata, **kwargs)
 
 
 class KimiK3StockPlusFront(B10KimiK3MoELayer):
@@ -1326,13 +1108,13 @@ class KimiK3StockPlusFront(B10KimiK3MoELayer):
                 **kwargs) -> torch.Tensor:
         stages = self._front_stages
         if not stages:
-            return self.stock_forward(hidden_states, attn_metadata, **kwargs)
+            return KimiK3MoEReference.forward(
+                self, hidden_states, attn_metadata, **kwargs)
         original_shape = hidden_states.shape
         h = hidden_states.view(-1, self.hidden_dim)
-        if h.shape[0] > self._stock_epilogue_cap():
-            # production's >cap path is the packed AR == baseline_forward
-            return self.baseline_forward(hidden_states, attn_metadata,
-                                         **kwargs)
+        if h.shape[0] > self.max_fused_moe_tokens:
+            return KimiK3MoEReference.forward(
+                self, hidden_states, attn_metadata, **kwargs)
         all_rank_tokens = kwargs.get(
             "all_rank_num_tokens",
             getattr(attn_metadata, "all_rank_num_tokens", None),
@@ -1427,7 +1209,7 @@ class KimiK3StockPlusFront(B10KimiK3MoELayer):
                                    self._fc2_shard_t)
             return self._comm().all_reduce(partial).view(original_shape)
         routed_latent, shared_red = (
-            self._moe_allreduce.finalize_allreduce_rmsnorm_concat(
+            self.moe_allreduce.finalize_allreduce_rmsnorm_concat(
                 fc2_output,
                 shared.view(-1, self.hidden_dim),
                 self.latent_norm.weight,
@@ -1440,19 +1222,14 @@ class KimiK3StockPlusFront(B10KimiK3MoELayer):
         return output.view(original_shape)
 
 
-# Short aliases for callers migrating from the old benchmark.
-KimiK3MoE = KimiK3MoEReference
-KimiK3MoEB10 = B10KimiK3MoELayer
-
 __all__ = [
     "B10KimiK3MoELayer",
     "DecodeFront",
     "DecodeTail",
     "ExpertBackend",
     "ExperimentConfig",
-    "KimiK3MoE",
-    "KimiK3MoEB10",
     "KimiK3MoEReference",
+    "KimiK3StockPlusFront",
     "LayerMode",
     "PrefillFC1",
     "Routing",
