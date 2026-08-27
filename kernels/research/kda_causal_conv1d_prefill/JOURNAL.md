@@ -1,5 +1,28 @@
 # Journal
 
+## 2026-08-27 — TRT integration-surface alignment
+
+- TRT-LLM shipped a redesigned stable surface
+  (`_torch/modules/mamba/causal_conv1d_prefill.py`) written for kernel
+  swapping; aligned the package wrapper to it with no TRT-LLM edits.
+- `kernel.py` now takes the identical call: `seq_lens_cpu` (with
+  `sequence_lengths` kept as a deprecated alias), optional
+  `cache_indices`/`has_initial_state` (Triton-surface defaults: slot =
+  sequence index, no initial state), `qkv_group_size`/`qkv_group_tokens`,
+  and the same validation errors.
+- Grouped output implemented in the streaming kernel as an addressing-only
+  store-row shift over a stride-G descriptor of the grouped storage; CuTe
+  constraint `G % 512 == 0` (CTA channel span) documented as stricter than
+  Triton's 256. Padded-slot input copy kept as a compatible superset of the
+  new uninitialized-rows contract.
+- Validation on GPU 7 (1500 MHz lock): signature parity programmatic PASS;
+  grouped-vs-flat regroup bitwise 6/6 (dense + strided production, T
+  128/8192, B 1/8, mixed initial states, tail-rows case) with bitwise
+  states; focused correctness suite re-passed; grouped-store cost +0.5%
+  dense / +6.5% strided on T8192 B8, flat path unchanged. Receipts:
+  `local_results/r3_trt_surface_alignment.json`,
+  `local_results/r3_surface_case_correctness.json`.
+
 ## 2026-08-27 — round-3 finalization: single config, Triton gate PASS 18/18
 
 - User acceptance update applied: one configuration for every shape, Triton
@@ -16,7 +39,7 @@
 - Final gates: case correctness 17/17, full matrix 108/108 (states bitwise);
   five-round main benchmark PASS 18/18 vs unchanged git-HEAD Triton,
   1.774–3.949x, worst margin 77% (no <5% rerun triggered). Receipt:
-  `results/r3_acceptance_summary.json`.
+  `local_results/r3_acceptance_summary.json`.
 - Final NCU (selected + Triton strided): dense long 24.5–25.2 µs (47.6–48.1%
   compute, 31.0–31.8% DRAM SOL, 72 regs); strided long 33.9–34.4 µs
   (53.4–54.4% compute, 41.8–42.6% DRAM SOL, 64 regs). FP32 ring cut ALU pipe
@@ -152,9 +175,9 @@
   unchanged contract leaves that output uninitialized; native padded semantics
   passed.
 - Pre-candidate artifacts:
-  - `results/pre_candidate_correctness.json`
-  - `results/pre_candidate_main_bench.json`
-  - `results/pre_candidate_floors.json`
+  - `local_results/pre_candidate_correctness.json`
+  - `local_results/pre_candidate_main_bench.json`
+  - `local_results/pre_candidate_floors.json`
 - Fixed-clock main BF16 W4 latency:
   - native pipeline: 0.02959–0.25206 ms;
   - git-`HEAD` one-launch Triton: 0.02924–0.05879 ms.
@@ -189,9 +212,9 @@ native output/state correctness.
 - Focused correctness now passes 11 cases covering FP16/BF16, W2/W3/W4,
   normal/unscaled/adversarial data, short sequences, padded slots, mixed
   initial state, permuted slots, and no-bias/no-activation. State is bitwise
-  equal to native. Artifact: `results/cute_t8_correctness_v2.json`.
+  equal to native. Artifact: `local_results/cute_t8_correctness_v2.json`.
 - Full required matrix correctness passes 72/72 shapes directly against native.
-  Artifact: `results/cute_auto_full_correctness.json`.
+  Artifact: `local_results/cute_auto_full_correctness.json`.
 
 ## 2026-08-26 — evidence-driven tiling
 
@@ -215,9 +238,9 @@ tiles 4/8/16 and tile 32 was operationally unstable, it is not accepted.
 ## 2026-08-26 — final matrix and standalone smoke
 
 - Candidate full-matrix benchmark: 72 shapes, 153.60 s runner wall time,
-  `results/cute_auto_full_matrix.json`.
+  `local_results/cute_auto_full_matrix.json`.
 - Baseline full matrix: native and git-`HEAD` Triton, 15.27 s runner wall time,
-  `results/pre_candidate_full_matrix.json`.
+  `local_results/pre_candidate_full_matrix.json`.
 - Candidate beats the native transpose+CUDA+materialize pipeline on 72/72
   shapes (2.15–4.90x, 3.43x geometric mean).
 - Candidate beats git-`HEAD` one-launch Triton on 52/72 shapes (0.535–4.39x,
@@ -225,4 +248,4 @@ tiles 4/8/16 and tile 32 was operationally unstable, it is not accepted.
 - Main BF16 W4 candidate range: 0.00838–0.09283 ms. It beats Triton on 8/12
   main shapes and loses on all four `T=8192` shapes.
 - Verified the standalone package through repository `uv run` with CuTeDSL
-  4.5.2 / torch 2.9.1: `results/uv_standalone_smoke.json`.
+  4.5.2 / torch 2.9.1: `local_results/uv_standalone_smoke.json`.

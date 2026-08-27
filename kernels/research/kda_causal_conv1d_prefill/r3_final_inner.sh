@@ -13,20 +13,20 @@ run_pkg() {
 
 echo "=== [1/3] case correctness (selected defaults) ==="
 run_pkg python3 run.py --mode correctness --backends cute \
-    --output results/r3_selected_case_correctness.json \
+    --output local_results/r3_selected_case_correctness.json \
     | grep -E '^(CORRECT|RESULT)'
 echo "CASES_EXIT=$?"
 
 echo "=== [2/3] full matrix correctness (dense 72 + strided production) ==="
 run_pkg python3 run.py --mode matrix-correctness --matrix full --backends cute \
-    --output results/r3_selected_full_correctness.json \
+    --output local_results/r3_selected_full_correctness.json \
     | grep -E '^(CORRECT|RESULT)'
 echo "FULL_EXIT=$?"
 
 echo "=== [3/3] main benchmark matrix vs unchanged git-HEAD Triton (5 rounds) ==="
 run_pkg python3 run.py --mode benchmark --matrix main \
     --backends trt_triton_head,cute --warmup 50 --iterations 500 --rounds 5 \
-    --output results/r3_selected_main_confidence.json \
+    --output local_results/r3_selected_main_confidence.json \
     | grep -E '^BENCH' \
     | python3 -c "
 import json, sys

@@ -250,6 +250,8 @@ def make_streaming_launcher(
     group_loads: bool = False,
     group_span: int = 4,
     f32_ring: bool = False,
+    qkv_group_size: int = 0,
+    qkv_group_tokens: int = 0,
 ):
     """Build a lower-register kernel with a four-phase circular token window."""
 
@@ -294,6 +296,21 @@ def make_streaming_launcher(
         sequence_length = sequence_end - sequence_start
         local_token_base = token_block * token_tile
         slot = mCacheIndices[sequence]
+
+        # TRT integration-surface grouped store (qkv_group_size > 0): the
+        # host passes mOutput as a [rows, channels] descriptor over the
+        # grouped [channels // G, group_tokens, G] storage with row stride G,
+        # so address(token, channel) = token*G + channel. The grouped target
+        # address group*G*group_tokens + token*G + (channel % G) then equals
+        # address(token + group*(group_tokens - 1), channel): an
+        # addressing-only per-thread row shift. The host guarantees G is a
+        # multiple of the CTA channel span (threads * vector_width), so every
+        # CTA lies inside one group and vectorized stores are unchanged.
+        store_token_shift = I32(0)
+        if cutlass.const_expr(qkv_group_size > 0):
+            store_token_shift = (channel_base // qkv_group_size) * (
+                qkv_group_tokens - 1
+            )
 
         if cutlass.const_expr(fp32_params):
             weights = cute.make_fragment((vector_width, width), F32)
@@ -501,7 +518,7 @@ def make_streaming_launcher(
                     local_token = group_token_base + phase
                     token = sequence_start + local_token
                     if (local_token < sequence_length) & active_channel:
-                        output_row = mOutput[token, None]
+                        output_row = mOutput[token + store_token_shift, None]
                         output_vectors = cute.zipped_divide(
                             output_row,
                             (vector_width,),
@@ -602,7 +619,7 @@ def make_streaming_launcher(
                                     + channel_base
                                 )
                                 _prefetch_l2(mX.iterator + future_offset)
-                        output_row = mOutput[token, None]
+                        output_row = mOutput[token + store_token_shift, None]
                         output_vectors = cute.zipped_divide(
                             output_row,
                             (vector_width,),
@@ -839,6 +856,20 @@ class CuTeDirectBackend:
             return False, f"channels must be divisible by {vector_width}"
         if shape.activation not in (None, "silu", "swish"):
             return False, f"unsupported activation {shape.activation}"
+        if problem.qkv_group_size is not None:
+            if algorithm != "stream":
+                return False, "grouped output requires the streaming (W4) kernel"
+            channel_span = self.threads * vector_width
+            if problem.qkv_group_size % channel_span:
+                return False, (
+                    f"qkv_group_size must be a multiple of the CTA channel "
+                    f"span {channel_span}"
+                )
+            if shape.channels % problem.qkv_group_size:
+                return False, "qkv_group_size must divide channels"
+            group_tokens = problem.qkv_group_tokens or shape.tokens
+            if group_tokens < shape.tokens:
+                return False, "qkv_group_tokens must be >= num_prefill_tokens"
         return True, ""
 
     @staticmethod
@@ -884,6 +915,10 @@ class CuTeDirectBackend:
             else VEC
         )
         row_stride = problem.projected.stride(0)
+        qkv_group_size = problem.qkv_group_size or 0
+        qkv_group_tokens = (
+            (problem.qkv_group_tokens or shape.tokens) if qkv_group_size else 0
+        )
         key = (
             shape.dtype,
             shape.width,
@@ -906,6 +941,8 @@ class CuTeDirectBackend:
             self.group_loads,
             self.group_span,
             self.f32_ring,
+            qkv_group_size,
+            qkv_group_tokens,
         )
         compiled = self._cache.get(key)
         if compiled is None:
@@ -938,6 +975,8 @@ class CuTeDirectBackend:
                         "group_loads": self.group_loads,
                         "group_span": self.group_span,
                         "f32_ring": self.f32_ring,
+                        "qkv_group_size": qkv_group_size,
+                        "qkv_group_tokens": qkv_group_tokens,
                     }
                 )
             launcher = launcher_factory(**launcher_kwargs)
@@ -948,12 +987,38 @@ class CuTeDirectBackend:
         return compiled
 
     def prepare(self, problem: Problem) -> Prepared:
-        output = torch.empty(
-            (problem.shape.tokens, problem.shape.channels),
-            dtype=problem.projected.dtype,
-            device=problem.projected.device,
-        )
-        arguments = self._arguments(problem, output)
+        tokens = problem.shape.tokens
+        channels = problem.shape.channels
+        if problem.qkv_group_size is None:
+            output = torch.empty(
+                (tokens, channels),
+                dtype=problem.projected.dtype,
+                device=problem.projected.device,
+            )
+            kernel_output = output
+        else:
+            # TRT integration-surface grouped mode: allocate the grouped
+            # [channels // G, group_tokens, G] contiguous result and hand the
+            # kernel a [rows, channels] descriptor over the same storage with
+            # row stride G. The kernel adds a per-CTA row shift of
+            # group_index * (group_tokens - 1) so token t of group g lands at
+            # plane g, row t. The descriptor's row count covers the highest
+            # shifted row and stays within the grouped storage because
+            # group_tokens >= tokens.
+            group_size = problem.qkv_group_size
+            group_tokens = problem.qkv_group_tokens or tokens
+            num_groups = channels // group_size
+            output = torch.empty(
+                (num_groups, group_tokens, group_size),
+                dtype=problem.projected.dtype,
+                device=problem.projected.device,
+            )
+            kernel_output = torch.as_strided(
+                output,
+                ((num_groups - 1) * (group_tokens - 1) + tokens, channels),
+                (group_size, 1),
+            )
+        arguments = self._arguments(problem, kernel_output)
         compiled = self._compiled(problem, arguments)
 
         def run() -> torch.Tensor:

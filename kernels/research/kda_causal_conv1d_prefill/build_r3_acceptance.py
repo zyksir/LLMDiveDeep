@@ -136,10 +136,10 @@ def main() -> None:
         "sources": {
             "benchmarks": str(CONFIDENCE.relative_to(PKG_DIR)),
             "calibration": str(CALIBRATION.relative_to(PKG_DIR)),
-            "correctness_case": "results/r3_selected_case_correctness.json",
-            "correctness_full": "results/r3_selected_full_correctness.json",
-            "precision_audit": "results/r3_silu_precision_audit.json",
-            "ncu": "results/ncu/ncu_sol_report.json",
+            "correctness_case": "local_results/r3_selected_case_correctness.json",
+            "correctness_full": "local_results/r3_selected_full_correctness.json",
+            "precision_audit": "local_results/r3_silu_precision_audit.json",
+            "ncu": "local_results/ncu/ncu_sol_report.json",
         },
     }
     OUTPUT.write_text(json.dumps(summary, indent=1, sort_keys=False) + "\n")

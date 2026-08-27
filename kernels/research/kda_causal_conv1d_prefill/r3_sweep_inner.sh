@@ -22,7 +22,7 @@ run_variant() {
             KDA_CUTE_F32_RING="${fr}" \
             python3 run.py --mode benchmark --matrix "${matrix}" \
             --backends cute --warmup 50 --iterations 500 \
-            --output "results/r3_sweep_${tag}_${matrix}.json" \
+            --output "local_results/r3_sweep_${tag}_${matrix}.json" \
             | grep -E '^BENCH' \
             | python3 -c "
 import json, sys
@@ -45,7 +45,7 @@ docker exec -e CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES}" \
     KDA_CUTE_GROUP_SPAN=8 \
     KDA_CUTE_F32_RING=1 \
     python3 run.py --mode correctness --backends cute \
-    --output results/r3_f32ring_correctness.json \
+    --output local_results/r3_f32ring_correctness.json \
     | grep -E '^(CORRECT|RESULT)'
 echo "FR_CORRECTNESS_EXIT=$?"
 

@@ -1,0 +1,82 @@
+diff --git a/tensorrt_llm/_torch/modules/mamba/causal_conv1d_triton.py b/tensorrt_llm/_torch/modules/mamba/causal_conv1d_triton.py
+index cccc3dfc87..864a90170b 100644
+--- a/tensorrt_llm/_torch/modules/mamba/causal_conv1d_triton.py
++++ b/tensorrt_llm/_torch/modules/mamba/causal_conv1d_triton.py
+@@ -27,6 +27,11 @@ import triton.language as tl
+ from tensorrt_llm._torch.modules.mamba import PAD_SLOT_ID
+ from tensorrt_llm._utils import get_sm_version
+ 
++# Channel-block width of the varlen fwd launch. Wrapper kernels that remap
++# store addressing per channel block (see causal_conv1d_prefill) validate
++# their group sizes against this value.
++CONV_FWD_BLOCK_N = 256
++
+ 
+ @triton.jit()
+ def _causal_conv1d_fwd_kernel(  # continuous batching
+@@ -346,7 +351,7 @@ def _causal_conv1d_fwd_kernel(  # continuous batching
+                     x_ptrs_1d = x_base_1d + idx_token * stride_x_token  # [BLOCK_N]
+                     matrix_x = tl.load(x_ptrs_1d, mask=mask_x_1d)
+ 
+-            acc += matrix_x * matrix_w  # [BLOCK_N]
++            acc += matrix_x.to(tl.float32) * matrix_w.to(tl.float32)  # [BLOCK_N]
+ 
+         if KERNEL_WIDTH == 2:
+             col0 = matrix_x
+@@ -382,10 +387,19 @@ def causal_conv1d_fn(
+     activation: Optional[str] = "silu",
+     pad_slot_id: int = PAD_SLOT_ID,
+     validate_data=False,
++    out: Optional[torch.Tensor] = None,
++    kernel=None,
++    kernel_meta: Optional[dict] = None,
+     **kwargs,
+ ):
+     """support varlen + continuous batching when x is 2D tensor
+ 
++    kernel: an alternative @triton.jit kernel with _causal_conv1d_fwd_kernel's
++        exact signature -- callers that want their launches distinguishable in
++        traces pass a named inlining wrapper (see causal_conv1d_prefill).
++    kernel_meta: extra constexpr kwargs forwarded to the launch, for wrapper
++        kernels whose signature extends _causal_conv1d_fwd_kernel's.
++
+     x: (dim,cu_seq_len)
+         cu_seq_len = total tokens of all seqs in that batch
+         sequences are concatenated from left to right for varlen
+@@ -431,7 +445,15 @@ def causal_conv1d_fn(
+     if isinstance(activation, bool) and activation:
+         activation = "silu"
+ 
+-    out = torch.empty_like(x)
++    # Caller-provided `out` lets a non-dense x view (e.g. a column slice of a
++    # packed projection) still produce output in the caller's desired layout;
++    # empty_like on such a view falls back to a contiguous (channel-major)
++    # allocation. The kernel reads output strides explicitly, so any 2D view
++    # with one unit stride works.
++    if out is None:
++        out = torch.empty_like(x)
++    elif out.shape != x.shape:
++        raise ValueError(f"out shape {tuple(out.shape)} != x shape {tuple(x.shape)}")
+ 
+     is_channel_last = (x.stride(0) == 1) & (x.stride(1) > 1)
+     dim, cu_seqlen = x.shape
+@@ -502,7 +524,7 @@ def causal_conv1d_fn(
+             triton.cdiv(dim, META["BLOCK_N"]),
+         )
+ 
+-    _causal_conv1d_fwd_kernel[grid](
++    (kernel if kernel is not None else _causal_conv1d_fwd_kernel)[grid](
+         # Pointers to matrices
+         x,
+         weight,
+@@ -541,8 +563,9 @@ def causal_conv1d_fn(
+         NP2_STATELEN=np2_statelen,
+         # launch_cooperative_grid=True
+         BLOCK_M=8,
+-        BLOCK_N=256,
++        BLOCK_N=CONV_FWD_BLOCK_N,
+         num_stages=2,
++        **(kernel_meta or {}),
+     )
+     return out
+ 

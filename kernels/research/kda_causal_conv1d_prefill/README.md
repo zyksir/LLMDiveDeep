@@ -22,37 +22,54 @@ same name but capability 8.9. This report does not label the device B200.
 - `IDEA_LEDGER.md`: template survey, hypotheses, and decision gate.
 - `JOURNAL.md`: chronological trial record.
 - `REPORT.md`: final correctness/performance report.
-- `results/`: durable structured receipts.
+- `local_results/`: durable structured receipts.
 
-## Standalone API
+## Standalone API (TRT integration-surface compatible)
+
+`kernel.py` is call-compatible with the TRT-LLM stable integration surface
+`tensorrt_llm/_torch/modules/mamba/causal_conv1d_prefill.py`: same argument
+names/order, same validation errors, same grouped output mode. A caller can
+swap the Triton `causal_conv1d_prefill` for the CuTe one without edits.
 
 ```python
 from kernel import CausalConv1dPrefill
 
 runner = CausalConv1dPrefill()
 prepared = runner.prepare(
-    projected,
+    projected,                       # [T, D]; row-strided views supported
     num_prefill_tokens,
     weight,
     conv_states=conv_states,
     query_start_loc=query_start_loc,
-    cache_indices=cache_indices,
-    has_initial_state=has_initial_state,
+    seq_lens_cpu=seq_lens_cpu,       # CPU sequence lengths (required)
+    cache_indices=cache_indices,     # optional; defaults to slot=sequence idx
+    has_initial_state=has_initial_state,  # optional; defaults to all-False
     bias=bias,
     activation="silu",
-    sequence_lengths=sequence_lengths,  # CPU sequence lengths; optional
+    qkv_group_size=None,             # e.g. 1536 for grouped [D//G, T, G] output
+    qkv_group_tokens=None,           # plane rows; >= num_prefill_tokens
 )
 
 # One precompiled GPU launch. Output allocation and compilation already happened.
 output = prepared.run()
 ```
 
-If `sequence_lengths` is omitted, `prepare` derives them by copying
-`query_start_loc` to CPU. That synchronization is setup work and must remain
-outside timing.
+`sequence_lengths` remains accepted as a deprecated alias of `seq_lens_cpu`.
+
+Grouped mode (`qkv_group_size=G`) returns `[D // G, group_tokens, G]`
+contiguous — token-major within each channel-group plane, groups outermost —
+with only the leading `num_prefill_tokens` rows of each plane written
+(`qkv_group_tokens > num_prefill_tokens` leaves the tail rows uninitialized
+for mixed-batch splicing). Deviation from the Triton surface: the CuTe
+constraint is `G % 512 == 0` (CTA channel span = 128 threads x vector width
+4), stricter than Triton's multiple-of-256; the K3 production group
+`G = 1536 = 3 x 512` satisfies both. Grouped mode runs on the streaming W4
+kernel only.
 
 Live non-padded cache slots must be unique within one call. `PAD_SLOT_ID=-1`
-copies that sequence's input to output unchanged and does not modify state.
+copies that sequence's input to output unchanged and does not modify state —
+a compatible superset of the TRT contract, which leaves padded rows
+uninitialized and forbids reading them.
 
 ## Commands
 
@@ -72,7 +89,7 @@ cd /node-storage/CuTeDSLGen
 bash evaluation/decomposition_ab/gpu_run.sh -- \
   uv run python /node-storage/LLMDiveDeep/kernels/research/kda_causal_conv1d_prefill/run.py \
   --mode benchmark --matrix full --backends cute \
-  --output /node-storage/LLMDiveDeep/kernels/research/kda_causal_conv1d_prefill/results/cute_full.json
+  --output /node-storage/LLMDiveDeep/kernels/research/kda_causal_conv1d_prefill/local_results/cute_full.json
 ```
 
 Direct native correctness requires a TensorRT-LLM environment with the
@@ -126,12 +143,30 @@ W2/W3).
   / 31.0–31.8% DRAM SOL; strided long 33.9–34.4 µs at 53.4–54.4% compute /
   41.8–42.6% DRAM SOL. Unchanged Triton on strided long: 56.8–67.5 µs,
   80.7/73.9% compute-bound.
-- Canonical artifacts: `results/r3_acceptance_summary.json`,
-  `results/r3_selected_main_confidence.json`,
-  `results/r3_selected_full_correctness.json`,
-  `results/r3_silu_precision_audit.json`,
-  `results/r3_roof_calibration.json`, `results/ncu/ncu_sol_report.json`.
+- Canonical artifacts: `local_results/r3_acceptance_summary.json`,
+  `local_results/r3_selected_main_confidence.json`,
+  `local_results/r3_selected_full_correctness.json`,
+  `local_results/r3_silu_precision_audit.json`,
+  `local_results/r3_roof_calibration.json`, `local_results/ncu/ncu_sol_report.json`.
 
 Round-2 history (superseded): the per-regime dispatcher passed the dense TRT
 gate 12/12 (1.125–3.466x) but was REJECTED on the then-hard 80% SOL gate at
-25.6–35.5% analytical efficiency; artifacts remain under `results/r2_*`.
+25.6–35.5% analytical efficiency; artifacts remain under `local_results/r2_*`.
+
+## TRT integration-surface alignment
+
+The wrapper matches the redesigned TRT-LLM surface (see the Standalone API
+section). Validation receipt `local_results/r3_trt_surface_alignment.json`:
+
+- Signature parity verified programmatically against the TRT module (exact
+  prefix match; only the deprecated `sequence_lengths` alias is appended).
+- Grouped output bit-identical to the flat output regrouped via
+  `view(T, D//G, G).permute(1, 0, 2)` on 6/6 cases (dense D3072 and strided
+  production D4608, T in {128, 8192}, B in {1, 8}, mixed initial states,
+  including a `qkv_group_tokens > T` tail-rows case); conv states bitwise
+  identical between flat and grouped runs.
+- Focused correctness suite re-passed after the store-path change
+  (`local_results/r3_surface_case_correctness.json`).
+- Grouped-store cost on the selected config: +0.5% dense T8192 B8
+  (0.02803 -> 0.02819 ms, within noise) and +6.5% strided T8192 B8
+  (0.03987 -> 0.04247 ms); the flat path is unchanged.

@@ -86,7 +86,7 @@ and all hold.
 - git-`HEAD` Triton SHA256:
   `68860408e57d076765d1e0be13cc87b9a3811ea9424de670d1c39821e5332432`.
 
-### Calibrated attainable roofs (`results/r3_roof_calibration.json`)
+### Calibrated attainable roofs (`local_results/r3_roof_calibration.json`)
 
 The round-2 roof (1 GiB contiguous copy) was tested with minimal
 same-byte-volume, same-access-pattern streaming copy kernels at the real
@@ -122,7 +122,7 @@ pressure), 256-thread CTAs.
 
 Medians of five rounds, 50 warmups and 500 timed iterations per round,
 1500 MHz. SOL fraction = calibrated defensible lower bound / measured.
-Receipt: `results/r3_acceptance_summary.json`.
+Receipt: `local_results/r3_acceptance_summary.json`.
 
 | D | T | B | layout | CuTe ms | Triton ms | speedup | SOL vs calibrated |
 |---:|---:|---:|---|---:|---:|---:|---:|
@@ -155,7 +155,7 @@ isolated launch floor and beat Triton by ~3.6–3.9x.
   incl. FP16/W2/W3 plus strided production variants); conv states bitwise
   exact. Case suite 17/17 (unscaled, adversarial extremes, short, padded,
   mixed initial state, permuted slots, no-bias/no-activation, strided).
-- Precision audit (`results/r3_silu_precision_audit.json`): FP32 accumulation
+- Precision audit (`local_results/r3_silu_precision_audit.json`): FP32 accumulation
   present in every variant; BF16 parameter fragments bitwise-identical to the
   FP32-parameter path; tile/threads/prefetch config choices bitwise-invariant;
   SiLU tanh form vs native worst max-abs 3.13e-2 (BF16 unscaled, atol gate
@@ -167,7 +167,7 @@ isolated launch floor and beat Triton by ~3.6–3.9x.
 ## Final NCU (selected config) and plateau evidence
 
 NCU replay clocks ~2.0 GHz despite the benchmark lock, so NCU durations are
-not substituted for 1500 MHz latencies. `results/ncu/ncu_sol_report.json` is
+not substituted for 1500 MHz latencies. `local_results/ncu/ncu_sol_report.json` is
 canonical.
 
 | Profile | duration | compute SOL | DRAM SOL | regs | occ theory / achieved | bench vs calibrated floor |
@@ -211,6 +211,49 @@ For reference, unchanged Triton on the strided production long shapes runs at
 80.7%/73.9% compute SOL with only 25.9%/22.0% DRAM SOL — it is
 instruction-bound and 1.77–2.07x slower.
 
+## TRT integration-surface alignment
+
+TRT-LLM's redesigned stable surface
+(`tensorrt_llm/_torch/modules/mamba/causal_conv1d_prefill.py`, written so the
+kernel can be swapped "Triton today, CuTeDSL later") is now the authoritative
+interface; the package wrapper was aligned to it without editing any TRT-LLM
+file. Receipt: `local_results/r3_trt_surface_alignment.json`.
+
+- **Signature parity:** `kernel.py`'s `causal_conv1d_prefill` /
+  `CausalConv1dPrefill.prepare` accepts the identical call (`seq_lens_cpu`
+  keyword, `cache_indices`/`has_initial_state` optional with
+  Triton-surface defaults, `qkv_group_size`/`qkv_group_tokens`), raises the
+  same validation errors, and keeps `sequence_lengths` as a deprecated alias.
+  Parity is verified programmatically in the receipt.
+- **Grouped output mode:** `qkv_group_size=G` returns
+  `[D // G, group_tokens, G]` contiguous with only the leading
+  `num_prefill_tokens` rows of each plane written. In the CuTe streaming
+  kernel this is an addressing-only change: the host passes a
+  `[rows, D]` descriptor with row stride `G` over the grouped storage, and
+  each CTA adds a store-row shift of `group_index * (group_tokens - 1)`
+  (`G` must be a multiple of the CTA channel span, so a CTA never straddles
+  groups). FP32 accumulation, the state-ordering proof, and the one-launch
+  contract are untouched; state writes are identical in both modes.
+- **Validation (bitwise):** grouped output equals the flat output regrouped
+  via `view(T, D//G, G).permute(1, 0, 2)` on 6/6 cases — dense D3072 and
+  strided production D4608 (G=1536), T in {128, 8192}, B in {1, 8}, mixed
+  initial states, plus a `qkv_group_tokens=192 > T=128` tail-rows case —
+  and conv states are bitwise identical between flat and grouped runs. The
+  focused correctness suite re-passed after the store-path change
+  (`local_results/r3_surface_case_correctness.json`).
+- **Grouped-store cost** (50 warmup / 500 iters, 1500 MHz): dense T8192 B8
+  0.02803 -> 0.02819 ms (+0.5%, within noise); strided production T8192 B8
+  0.03987 -> 0.04247 ms (+6.5%). The flat path is unchanged versus the
+  acceptance receipt, and the grouped cost replaces a far more expensive
+  downstream permute+contiguous copy for q/k/v consumers.
+- **Documented deviations from the Triton surface:** (1) `qkv_group_size`
+  must be a multiple of 512 (CTA channel span, 128 threads x vector width 4)
+  versus Triton's multiple of `CONV_FWD_BLOCK_N = 256`; K3 production
+  `G = 1536 = 3 x 512` satisfies both. (2) Padded sequences copy input to
+  output — a compatible superset of the contract, which leaves those rows
+  uninitialized and forbids reading them. (3) Grouped mode requires the
+  streaming W4 kernel; the W2/W3 direct kernel rejects it.
+
 ## Compile, timing, and artifacts
 
 - Full-matrix correctness wall time: 193.5 s; case suite 27.4 s; five-round
@@ -220,13 +263,15 @@ instruction-bound and 1.77–2.07x slower.
 
 Canonical artifacts:
 
-- `results/r3_acceptance_summary.json` — final per-shape gate verdicts/SOL
-- `results/r3_selected_main_confidence.json` — five-round benchmark
-- `results/r3_selected_full_correctness.json`, `results/r3_selected_case_correctness.json`
-- `results/r3_silu_precision_audit.json` — precision audit
-- `results/r3_roof_calibration.json` — calibrated roofs
-- `results/ncu/ncu_sol_report.json`, `results/ncu/r3_selected_*.ncu-rep/.csv`,
-  `results/ncu/r3_triton_T8192_D4608s_*.ncu-rep/.csv`
+- `local_results/r3_acceptance_summary.json` — final per-shape gate verdicts/SOL
+- `local_results/r3_selected_main_confidence.json` — five-round benchmark
+- `local_results/r3_selected_full_correctness.json`, `local_results/r3_selected_case_correctness.json`
+- `local_results/r3_silu_precision_audit.json` — precision audit
+- `local_results/r3_roof_calibration.json` — calibrated roofs
+- `local_results/ncu/ncu_sol_report.json`, `local_results/ncu/r3_selected_*.ncu-rep/.csv`,
+  `local_results/ncu/r3_triton_T8192_D4608s_*.ncu-rep/.csv`
+- `local_results/r3_trt_surface_alignment.json`,
+  `local_results/r3_surface_case_correctness.json` — TRT surface alignment
 
 ## Reproduction
 
@@ -244,7 +289,7 @@ GPU_POOL=7 IDLE_GATE_MEM_MIB=60000 bash evaluation/decomposition_ab/gpu_run.sh -
   env KDA_NCU_PROFILE_SET=round3-final \
   bash /node-storage/LLMDiveDeep/kernels/research/kda_causal_conv1d_prefill/ncu_inner_profiles.sh \
   "$CPID" /node-storage/LLMDiveDeep/kernels/research/kda_causal_conv1d_prefill \
-  /node-storage/LLMDiveDeep/kernels/research/kda_causal_conv1d_prefill/results/ncu
+  /node-storage/LLMDiveDeep/kernels/research/kda_causal_conv1d_prefill/local_results/ncu
 docker exec -w /node-storage/LLMDiveDeep/kernels/research/kda_causal_conv1d_prefill trt-dev \
   python3 parse_ncu_results.py
 

@@ -82,7 +82,7 @@ _load_r3_benchmark_latencies()
 COPY_BW_GBPS = 6335.906069678976
 LAUNCH_FLOOR_MS = 0.0029633920192718506
 
-# Round-3 calibrated attainable roofs (results/r3_roof_calibration.json):
+# Round-3 calibrated attainable roofs (local_results/r3_roof_calibration.json):
 # best same-byte-volume, same-access-pattern streaming rate demonstrated on
 # this device at the 1500 MHz lock. Contiguous long shapes attain MORE than
 # the 1 GiB copy (6957 GB/s), so their floor tightens; the strided production

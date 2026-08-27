@@ -199,7 +199,7 @@ are NOT 128-byte aligned (`9504 % 128 = 32`), which costs partial DRAM lines
 at row edges. The wrapper derives `assumed_align` and the effective vector
 width from real pointers and strides per call.
 
-## Round 3 roof calibration (results/r3_roof_calibration.json)
+## Round 3 roof calibration (local_results/r3_roof_calibration.json)
 
 Hypothesis to test first: the 1 GiB-copy bandwidth roof (6335.9 GB/s) may be
 loose for ~100 MB working sets. Method: minimal same-byte-volume,
@@ -242,7 +242,7 @@ Findings:
 | R3-I10 | FP32 parameter fragments (`KDA_CUTE_FP32_PARAMS=1`) to remove per-tap BF16->FP32 weight converts | NCU shows ALU pipe at 64-66% (top pipe); weight converts are per-tap-per-vector | **marginal** (<2% moves, within noise on most shapes): compiler already hoists weight converts out of the token loop; outputs bitwise-identical (precision audit) |
 | R3-I11 | F32 ring: store ring/current history in FP32 so each loaded value is converted BF16->FP32 exactly once instead of once per consuming tap | Remaining ALU-pipe pressure is input-value converts (W=4 taps consume each row 4x) | **confirmed at span 4:** dense long B8 0.0286->0.0268 ms, strided long 0.0408->0.0399/0.0401; at span 8 it regresses (F32 fragments double register bytes; occupancy drops). New overall best |
 
-## Round 3 precision audit (results/r3_silu_precision_audit.json)
+## Round 3 precision audit (local_results/r3_silu_precision_audit.json)
 
 User directive: no silent numeric weakening. Audit on every W4 correctness
 case (normal, unscaled, adversarial extremes, short, padded, strided
@@ -326,4 +326,4 @@ Quick-matrix worst-case sacrifice versus per-shape best across all round-3
 sweeps: +3.7% (dense long B8: 0.02779 vs 0.02680 ms for tile24-span4, which
 loses strided-medium by 15%). All other measured shapes are within ~2.3% of
 their per-shape best. Final verdicts live in
-`results/r3_acceptance_summary.json` and REPORT.md.
+`local_results/r3_acceptance_summary.json` and REPORT.md.

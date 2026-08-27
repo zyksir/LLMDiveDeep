@@ -63,6 +63,12 @@ class Problem:
     cache_indices: torch.Tensor
     has_initial_state: torch.Tensor
     sequence_lengths: tuple[int, ...]
+    # TRT integration-surface grouped output mode: when qkv_group_size is set
+    # the output is [channels // G, group_tokens, G] contiguous (token-major
+    # within each channel-group plane, groups outermost) with only the leading
+    # num_prefill_tokens rows of each plane written.
+    qkv_group_size: int | None = None
+    qkv_group_tokens: int | None = None
 
     def clone(self) -> "Problem":
         return Problem(
@@ -75,6 +81,8 @@ class Problem:
             cache_indices=self.cache_indices.clone(),
             has_initial_state=self.has_initial_state.clone(),
             sequence_lengths=self.sequence_lengths,
+            qkv_group_size=self.qkv_group_size,
+            qkv_group_tokens=self.qkv_group_tokens,
         )
 
 

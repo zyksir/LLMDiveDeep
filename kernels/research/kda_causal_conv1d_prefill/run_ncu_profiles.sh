@@ -9,7 +9,7 @@
 set -euo pipefail
 
 PKG_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-RESULTS_DIR="${PKG_DIR}/results/ncu"
+RESULTS_DIR="${PKG_DIR}/local_results/ncu"
 mkdir -p "${RESULTS_DIR}"
 
 CUTEDSLGEN_ROOT="${CUTEDSLGEN_ROOT:-/node-storage/CuTeDSLGen}"
