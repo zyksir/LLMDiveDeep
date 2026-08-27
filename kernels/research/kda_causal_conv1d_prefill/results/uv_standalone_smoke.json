@@ -1,0 +1,178 @@
+{
+  "benchmarks": [
+    {
+      "backend": "cute_direct_row_major",
+      "batch": 1,
+      "channels": 1536,
+      "dtype": "bf16",
+      "first_call_seconds": 0.00247998908162117,
+      "iterations": 20,
+      "latency_ms": 0.010782399773597717,
+      "launch_count": 1,
+      "setup_seconds": 1.5434019397944212,
+      "shape": "bf16_w4_d1536_t128_b1_bias1_silu_normal",
+      "source": "backends/cute_direct.py",
+      "supported": true,
+      "tokens": 128,
+      "wall_seconds": 0.0003170710988342762,
+      "warmup": 5,
+      "width": 4
+    },
+    {
+      "backend": "cute_direct_row_major",
+      "batch": 8,
+      "channels": 1536,
+      "dtype": "bf16",
+      "first_call_seconds": 0.0007320190779864788,
+      "iterations": 20,
+      "latency_ms": 0.0200095996260643,
+      "launch_count": 1,
+      "setup_seconds": 1.4895728549454361,
+      "shape": "bf16_w4_d1536_t1024_b8_bias1_silu_normal",
+      "source": "backends/cute_direct.py",
+      "supported": true,
+      "tokens": 1024,
+      "wall_seconds": 0.0004581410903483629,
+      "warmup": 5,
+      "width": 4
+    },
+    {
+      "backend": "cute_direct_row_major",
+      "batch": 8,
+      "channels": 3072,
+      "dtype": "bf16",
+      "first_call_seconds": 0.0012701537925750017,
+      "iterations": 20,
+      "latency_ms": 0.09358879923820496,
+      "launch_count": 1,
+      "setup_seconds": 4.910852316999808,
+      "shape": "bf16_w4_d3072_t8192_b8_bias1_silu_normal",
+      "source": "backends/cute_direct.py",
+      "supported": true,
+      "tokens": 8192,
+      "wall_seconds": 0.001950541976839304,
+      "warmup": 5,
+      "width": 4
+    }
+  ],
+  "correctness": [],
+  "floors": {
+    "assumed_sm_clock_ghz": 1.5,
+    "copy_kernel_ms": 0.3427178700764974,
+    "copy_payload_bytes": 1073741824,
+    "copy_read_write_gbps": 6266.039315430689,
+    "fp32_peak_tflops": 56.832,
+    "launch_floor_ms": 0.0031177279949188234,
+    "sm_count": 148
+  },
+  "full_run_wall_seconds": 10.687010182999074,
+  "hardware": {
+    "capability": [
+      10,
+      3
+    ],
+    "cuda_version": "13.0",
+    "index": 0,
+    "name": "NVIDIA L20D",
+    "torch_version": "2.9.1+cu130",
+    "total_memory_bytes": 287428771840
+  },
+  "lower_bounds": {
+    "bf16_w4_d1536_t1024_b1_bias1_silu_normal": {
+      "arithmetic_floor_ms": 0.0002214054054054054,
+      "arithmetic_flops": 12582912.0,
+      "bandwidth_floor_ms": 0.001009451214968197,
+      "defensible_lower_bound_ms": 0.0031177279949188234,
+      "mandatory_bytes": 6325261.0,
+      "serial_width_floor_ms": 1.0666666666666666e-05
+    },
+    "bf16_w4_d1536_t1024_b8_bias1_silu_normal": {
+      "arithmetic_floor_ms": 0.0002214054054054054,
+      "arithmetic_flops": 12582912.0,
+      "bandwidth_floor_ms": 0.001024169124537148,
+      "defensible_lower_bound_ms": 0.0031177279949188234,
+      "mandatory_bytes": 6417484.0,
+      "serial_width_floor_ms": 1.0666666666666666e-05
+    },
+    "bf16_w4_d1536_t128_b1_bias1_silu_normal": {
+      "arithmetic_floor_ms": 2.7675675675675676e-05,
+      "arithmetic_flops": 1572864.0,
+      "bandwidth_floor_ms": 0.0001309019874771759,
+      "defensible_lower_bound_ms": 0.0031177279949188234,
+      "mandatory_bytes": 820237.0,
+      "serial_width_floor_ms": 1.0666666666666666e-05
+    },
+    "bf16_w4_d1536_t128_b8_bias1_silu_normal": {
+      "arithmetic_floor_ms": 2.7675675675675676e-05,
+      "arithmetic_flops": 1572864.0,
+      "bandwidth_floor_ms": 0.00014561989704612682,
+      "defensible_lower_bound_ms": 0.0031177279949188234,
+      "mandatory_bytes": 912460.0,
+      "serial_width_floor_ms": 1.0666666666666666e-05
+    },
+    "bf16_w4_d1536_t8192_b1_bias1_silu_normal": {
+      "arithmetic_floor_ms": 0.0017712432432432433,
+      "arithmetic_flops": 100663296.0,
+      "bandwidth_floor_ms": 0.008037845034896367,
+      "defensible_lower_bound_ms": 0.008037845034896367,
+      "mandatory_bytes": 50365453.0,
+      "serial_width_floor_ms": 1.0666666666666666e-05
+    },
+    "bf16_w4_d1536_t8192_b8_bias1_silu_normal": {
+      "arithmetic_floor_ms": 0.0017712432432432433,
+      "arithmetic_flops": 100663296.0,
+      "bandwidth_floor_ms": 0.008052562944465318,
+      "defensible_lower_bound_ms": 0.008052562944465318,
+      "mandatory_bytes": 50457676.0,
+      "serial_width_floor_ms": 1.0666666666666666e-05
+    },
+    "bf16_w4_d3072_t1024_b1_bias1_silu_normal": {
+      "arithmetic_floor_ms": 0.0004428108108108108,
+      "arithmetic_flops": 25165824.0,
+      "bandwidth_floor_ms": 0.002018900355260615,
+      "defensible_lower_bound_ms": 0.0031177279949188234,
+      "mandatory_bytes": 12650509.0,
+      "serial_width_floor_ms": 1.0666666666666666e-05
+    },
+    "bf16_w4_d3072_t1024_b8_bias1_silu_normal": {
+      "arithmetic_floor_ms": 0.0004428108108108108,
+      "arithmetic_flops": 25165824.0,
+      "bandwidth_floor_ms": 0.0020483261202005093,
+      "defensible_lower_bound_ms": 0.0031177279949188234,
+      "mandatory_bytes": 12834892.0,
+      "serial_width_floor_ms": 1.0666666666666666e-05
+    },
+    "bf16_w4_d3072_t128_b1_bias1_silu_normal": {
+      "arithmetic_floor_ms": 5.535135135135135e-05,
+      "arithmetic_flops": 3145728.0,
+      "bandwidth_floor_ms": 0.0002618019002785725,
+      "defensible_lower_bound_ms": 0.0031177279949188234,
+      "mandatory_bytes": 1640461.0,
+      "serial_width_floor_ms": 1.0666666666666666e-05
+    },
+    "bf16_w4_d3072_t128_b8_bias1_silu_normal": {
+      "arithmetic_floor_ms": 5.535135135135135e-05,
+      "arithmetic_flops": 3145728.0,
+      "bandwidth_floor_ms": 0.0002912276652184668,
+      "defensible_lower_bound_ms": 0.0031177279949188234,
+      "mandatory_bytes": 1824844.0,
+      "serial_width_floor_ms": 1.0666666666666666e-05
+    },
+    "bf16_w4_d3072_t8192_b1_bias1_silu_normal": {
+      "arithmetic_floor_ms": 0.0035424864864864866,
+      "arithmetic_flops": 201326592.0,
+      "bandwidth_floor_ms": 0.016075687995116956,
+      "defensible_lower_bound_ms": 0.016075687995116956,
+      "mandatory_bytes": 100730893.0,
+      "serial_width_floor_ms": 1.0666666666666666e-05
+    },
+    "bf16_w4_d3072_t8192_b8_bias1_silu_normal": {
+      "arithmetic_floor_ms": 0.0035424864864864866,
+      "arithmetic_flops": 201326592.0,
+      "bandwidth_floor_ms": 0.01610511376005685,
+      "defensible_lower_bound_ms": 0.01610511376005685,
+      "mandatory_bytes": 100915276.0,
+      "serial_width_floor_ms": 1.0666666666666666e-05
+    }
+  }
+}

@@ -1,0 +1,12 @@
+==PROF== Connected to process 103307 (/usr/bin/python3.12)
+[PROFILE_DRIVER] Preparing backend=cute T=8192 D=3072 B=8 tile=16
+[PROFILE_DRIVER] First call (JIT trigger) ...
+[PROFILE_DRIVER] Warmup (10 iters) ...
+[PROFILE_DRIVER] Starting profiled region (1 iters) ...
+==WARNING== Unable to access the following 6 metrics: ctc__rx_bytes_data_user.sum, ctc__rx_bytes_data_user.sum.pct_of_peak_sustained_elapsed, ctc__rx_bytes_data_user.sum.per_second, ctc__tx_bytes_data_user.sum, ctc__tx_bytes_data_user.sum.pct_of_peak_sustained_elapsed, ctc__tx_bytes_data_user.sum.per_second.
+
+
+==PROF== Profiling "kernel_cutlass_causal_conv1d_..." - 0 (1/1): 0%....50%....100% - 40 passes
+[PROFILE_DRIVER] Done.
+==PROF== Disconnected from process 103307
+==PROF== Report: /node-storage/CuTeDSLGen/generated/blackwell_kda_causal_conv1d_prefill/results/ncu/cute_T8192_D3072_B8_tile16.ncu-rep

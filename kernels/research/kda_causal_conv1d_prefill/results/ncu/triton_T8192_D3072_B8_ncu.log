@@ -1,0 +1,14 @@
+==PROF== Connected to process 103936 (/usr/bin/python3.12)
+Skipping import of cpp extensions due to incompatible torch version 2.12.0a0+5aff3928d8.nv26.05 for torchao version 0.15.0             Please see https://github.com/pytorch/ao/issues/2919 for more info
+[TensorRT-LLM] TensorRT LLM version: 1.3.0rc23
+[PROFILE_DRIVER] Preparing backend=trt_triton_head T=8192 D=3072 B=8 tile=None
+[PROFILE_DRIVER] First call (JIT trigger) ...
+[PROFILE_DRIVER] Warmup (10 iters) ...
+[PROFILE_DRIVER] Starting profiled region (1 iters) ...
+==WARNING== Unable to access the following 6 metrics: ctc__rx_bytes_data_user.sum, ctc__rx_bytes_data_user.sum.pct_of_peak_sustained_elapsed, ctc__rx_bytes_data_user.sum.per_second, ctc__tx_bytes_data_user.sum, ctc__tx_bytes_data_user.sum.pct_of_peak_sustained_elapsed, ctc__tx_bytes_data_user.sum.per_second.
+
+
+==PROF== Profiling "_causal_conv1d_fwd_kernel" - 0 (1/1): 0%....50%....100% - 40 passes
+[PROFILE_DRIVER] Done.
+==PROF== Disconnected from process 103936
+==PROF== Report: /node-storage/CuTeDSLGen/generated/blackwell_kda_causal_conv1d_prefill/results/ncu/triton_T8192_D3072_B8.ncu-rep

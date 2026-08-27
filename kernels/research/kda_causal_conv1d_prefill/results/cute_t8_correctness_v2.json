@@ -1,0 +1,278 @@
+{
+  "benchmarks": [],
+  "correctness": [
+    {
+      "backend": "cute_direct_row_major",
+      "case": "fp16_w2_normal",
+      "correct": true,
+      "first_call_seconds": 0.0012068178039044142,
+      "max_abs": 6.103515625e-05,
+      "max_rel": 0.0008496176451444626,
+      "output_correct": true,
+      "reference_first_call_seconds": 0.35334227583371103,
+      "shape": "fp16_w2_d1536_t128_b8_bias1_silu_normal",
+      "source": "backends/cute_direct.py",
+      "state_correct": true,
+      "supported": true
+    },
+    {
+      "backend": "cute_direct_row_major",
+      "case": "fp16_w3_normal",
+      "correct": true,
+      "first_call_seconds": 0.0006712989415973425,
+      "max_abs": 6.103515625e-05,
+      "max_rel": 0.0008368201088160276,
+      "output_correct": true,
+      "reference_first_call_seconds": 0.0005242051556706429,
+      "shape": "fp16_w3_d1536_t128_b8_bias1_silu_normal",
+      "source": "backends/cute_direct.py",
+      "state_correct": true,
+      "supported": true
+    },
+    {
+      "backend": "cute_direct_row_major",
+      "case": "fp16_w4_normal",
+      "correct": true,
+      "first_call_seconds": 0.0006786079611629248,
+      "max_abs": 0.0001220703125,
+      "max_rel": 0.0009293680195696652,
+      "output_correct": true,
+      "reference_first_call_seconds": 0.0004372859839349985,
+      "shape": "fp16_w4_d1536_t128_b8_bias1_silu_normal",
+      "source": "backends/cute_direct.py",
+      "state_correct": true,
+      "supported": true
+    },
+    {
+      "backend": "cute_direct_row_major",
+      "case": "bf16_w2_normal",
+      "correct": true,
+      "first_call_seconds": 0.0006232939194887877,
+      "max_abs": 0.0009765625,
+      "max_rel": 0.005524862091988325,
+      "output_correct": true,
+      "reference_first_call_seconds": 0.0025516480673104525,
+      "shape": "bf16_w2_d1536_t128_b8_bias1_silu_normal",
+      "source": "backends/cute_direct.py",
+      "state_correct": true,
+      "supported": true
+    },
+    {
+      "backend": "cute_direct_row_major",
+      "case": "bf16_w3_normal",
+      "correct": true,
+      "first_call_seconds": 0.0006226988043636084,
+      "max_abs": 0.00048828125,
+      "max_rel": 0.0057142856530845165,
+      "output_correct": true,
+      "reference_first_call_seconds": 0.00041091302409768105,
+      "shape": "bf16_w3_d1536_t128_b8_bias1_silu_normal",
+      "source": "backends/cute_direct.py",
+      "state_correct": true,
+      "supported": true
+    },
+    {
+      "backend": "cute_direct_row_major",
+      "case": "bf16_w4_normal",
+      "correct": true,
+      "first_call_seconds": 0.0007273310329765081,
+      "max_abs": 0.00048828125,
+      "max_rel": 0.006756756920367479,
+      "output_correct": true,
+      "reference_first_call_seconds": 0.0004811168182641268,
+      "shape": "bf16_w4_d1536_t128_b8_bias1_silu_normal",
+      "source": "backends/cute_direct.py",
+      "state_correct": true,
+      "supported": true
+    },
+    {
+      "backend": "cute_direct_row_major",
+      "case": "bf16_w4_unscaled",
+      "correct": true,
+      "first_call_seconds": 8.381996303796768e-05,
+      "max_abs": 0.001953125,
+      "max_rel": 0.007633587811142206,
+      "output_correct": true,
+      "reference_first_call_seconds": 0.00036327005364000797,
+      "shape": "bf16_w4_d1536_t128_b8_bias1_silu_unscaled",
+      "source": "backends/cute_direct.py",
+      "state_correct": true,
+      "supported": true
+    },
+    {
+      "backend": "cute_direct_row_major",
+      "case": "fp16_w4_adversarial",
+      "correct": true,
+      "first_call_seconds": 6.75329938530922e-05,
+      "max_abs": 0.0,
+      "max_rel": 0.0,
+      "output_correct": true,
+      "reference_first_call_seconds": 0.0001399349421262741,
+      "shape": "fp16_w4_d1536_t128_b8_bias1_silu_adversarial",
+      "source": "backends/cute_direct.py",
+      "state_correct": true,
+      "supported": true
+    },
+    {
+      "backend": "cute_direct_row_major",
+      "case": "bf16_w4_short",
+      "correct": true,
+      "first_call_seconds": 0.0006284960545599461,
+      "max_abs": 0.0,
+      "max_rel": 0.0,
+      "output_correct": true,
+      "reference_first_call_seconds": 9.657791815698147e-05,
+      "shape": "bf16_w4_d1536_t16_b8_bias1_silu_normal",
+      "source": "backends/cute_direct.py",
+      "state_correct": true,
+      "supported": true
+    },
+    {
+      "backend": "cute_direct_row_major",
+      "case": "bf16_w4_padded",
+      "correct": true,
+      "first_call_seconds": 8.479203097522259e-05,
+      "max_abs": 0.0,
+      "max_rel": 0.0,
+      "output_correct": true,
+      "reference_first_call_seconds": 0.00037877983413636684,
+      "shape": "bf16_w4_d1536_t128_b8_bias1_silu_normal",
+      "source": "backends/cute_direct.py",
+      "state_correct": true,
+      "supported": true
+    },
+    {
+      "backend": "cute_direct_row_major",
+      "case": "bf16_w4_no_bias_no_activation",
+      "correct": true,
+      "first_call_seconds": 0.0006772100459784269,
+      "max_abs": 0.0,
+      "max_rel": 0.0,
+      "output_correct": true,
+      "reference_first_call_seconds": 0.00018270802684128284,
+      "shape": "bf16_w4_d1536_t128_b8_bias0_none_normal",
+      "source": "backends/cute_direct.py",
+      "state_correct": true,
+      "supported": true
+    }
+  ],
+  "floors": {
+    "assumed_sm_clock_ghz": 1.5,
+    "copy_kernel_ms": 0.33908586502075194,
+    "copy_payload_bytes": 1073741824,
+    "copy_read_write_gbps": 6333.155903943606,
+    "fp32_peak_tflops": 56.832,
+    "launch_floor_ms": 0.002924607992172241,
+    "sm_count": 148
+  },
+  "full_run_wall_seconds": 30.71082823094912,
+  "hardware": {
+    "capability": [
+      10,
+      3
+    ],
+    "cuda_version": "13.2",
+    "index": 0,
+    "name": "NVIDIA L20D",
+    "torch_version": "2.12.0a0+5aff3928d8.nv26.05",
+    "total_memory_bytes": 287428771840
+  },
+  "lower_bounds": {
+    "bf16_w4_d1536_t1024_b1_bias1_silu_normal": {
+      "arithmetic_floor_ms": 0.0002214054054054054,
+      "arithmetic_flops": 12582912.0,
+      "bandwidth_floor_ms": 0.0009987534012957599,
+      "defensible_lower_bound_ms": 0.002924607992172241,
+      "mandatory_bytes": 6325261.0,
+      "serial_width_floor_ms": 1.0666666666666666e-05
+    },
+    "bf16_w4_d1536_t1024_b8_bias1_silu_normal": {
+      "arithmetic_floor_ms": 0.0002214054054054054,
+      "arithmetic_flops": 12582912.0,
+      "bandwidth_floor_ms": 0.001013315335566567,
+      "defensible_lower_bound_ms": 0.002924607992172241,
+      "mandatory_bytes": 6417484.0,
+      "serial_width_floor_ms": 1.0666666666666666e-05
+    },
+    "bf16_w4_d1536_t128_b1_bias1_silu_normal": {
+      "arithmetic_floor_ms": 2.7675675675675676e-05,
+      "arithmetic_flops": 1572864.0,
+      "bandwidth_floor_ms": 0.00012951473364002374,
+      "defensible_lower_bound_ms": 0.002924607992172241,
+      "mandatory_bytes": 820237.0,
+      "serial_width_floor_ms": 1.0666666666666666e-05
+    },
+    "bf16_w4_d1536_t128_b8_bias1_silu_normal": {
+      "arithmetic_floor_ms": 2.7675675675675676e-05,
+      "arithmetic_flops": 1572864.0,
+      "bandwidth_floor_ms": 0.00014407666791083074,
+      "defensible_lower_bound_ms": 0.002924607992172241,
+      "mandatory_bytes": 912460.0,
+      "serial_width_floor_ms": 1.0666666666666666e-05
+    },
+    "bf16_w4_d1536_t8192_b1_bias1_silu_normal": {
+      "arithmetic_floor_ms": 0.0017712432432432433,
+      "arithmetic_flops": 100663296.0,
+      "bandwidth_floor_ms": 0.007952662742541649,
+      "defensible_lower_bound_ms": 0.007952662742541649,
+      "mandatory_bytes": 50365453.0,
+      "serial_width_floor_ms": 1.0666666666666666e-05
+    },
+    "bf16_w4_d1536_t8192_b8_bias1_silu_normal": {
+      "arithmetic_floor_ms": 0.0017712432432432433,
+      "arithmetic_flops": 100663296.0,
+      "bandwidth_floor_ms": 0.007967224676812457,
+      "defensible_lower_bound_ms": 0.007967224676812457,
+      "mandatory_bytes": 50457676.0,
+      "serial_width_floor_ms": 1.0666666666666666e-05
+    },
+    "bf16_w4_d3072_t1024_b1_bias1_silu_normal": {
+      "arithmetic_floor_ms": 0.0004428108108108108,
+      "arithmetic_flops": 25165824.0,
+      "bandwidth_floor_ms": 0.0019975047499024346,
+      "defensible_lower_bound_ms": 0.002924607992172241,
+      "mandatory_bytes": 12650509.0,
+      "serial_width_floor_ms": 1.0666666666666666e-05
+    },
+    "bf16_w4_d3072_t1024_b8_bias1_silu_normal": {
+      "arithmetic_floor_ms": 0.0004428108108108108,
+      "arithmetic_flops": 25165824.0,
+      "bandwidth_floor_ms": 0.0020266186707969423,
+      "defensible_lower_bound_ms": 0.002924607992172241,
+      "mandatory_bytes": 12834892.0,
+      "serial_width_floor_ms": 1.0666666666666666e-05
+    },
+    "bf16_w4_d3072_t128_b1_bias1_silu_normal": {
+      "arithmetic_floor_ms": 5.535135135135135e-05,
+      "arithmetic_flops": 3145728.0,
+      "bandwidth_floor_ms": 0.00025902741459096215,
+      "defensible_lower_bound_ms": 0.002924607992172241,
+      "mandatory_bytes": 1640461.0,
+      "serial_width_floor_ms": 1.0666666666666666e-05
+    },
+    "bf16_w4_d3072_t128_b8_bias1_silu_normal": {
+      "arithmetic_floor_ms": 5.535135135135135e-05,
+      "arithmetic_flops": 3145728.0,
+      "bandwidth_floor_ms": 0.0002881413354854701,
+      "defensible_lower_bound_ms": 0.002924607992172241,
+      "mandatory_bytes": 1824844.0,
+      "serial_width_floor_ms": 1.0666666666666666e-05
+    },
+    "bf16_w4_d3072_t8192_b1_bias1_silu_normal": {
+      "arithmetic_floor_ms": 0.0035424864864864866,
+      "arithmetic_flops": 201326592.0,
+      "bandwidth_floor_ms": 0.015905323432394213,
+      "defensible_lower_bound_ms": 0.015905323432394213,
+      "mandatory_bytes": 100730893.0,
+      "serial_width_floor_ms": 1.0666666666666666e-05
+    },
+    "bf16_w4_d3072_t8192_b8_bias1_silu_normal": {
+      "arithmetic_floor_ms": 0.0035424864864864866,
+      "arithmetic_flops": 201326592.0,
+      "bandwidth_floor_ms": 0.01593443735328872,
+      "defensible_lower_bound_ms": 0.01593443735328872,
+      "mandatory_bytes": 100915276.0,
+      "serial_width_floor_ms": 1.0666666666666666e-05
+    }
+  }
+}

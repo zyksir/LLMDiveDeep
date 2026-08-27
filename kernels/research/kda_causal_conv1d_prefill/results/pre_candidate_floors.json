@@ -1,0 +1,123 @@
+{
+  "benchmarks": [],
+  "correctness": [],
+  "floors": {
+    "assumed_sm_clock_ghz": 1.5,
+    "copy_kernel_ms": 0.3390186627705892,
+    "copy_payload_bytes": 1073741824,
+    "copy_read_write_gbps": 6334.41129892363,
+    "fp32_peak_tflops": 56.832,
+    "launch_floor_ms": 0.003013184070587158,
+    "sm_count": 148
+  },
+  "full_run_wall_seconds": 0.6394933008123189,
+  "hardware": {
+    "capability": [
+      10,
+      3
+    ],
+    "cuda_version": "13.2",
+    "index": 0,
+    "name": "NVIDIA L20D",
+    "torch_version": "2.12.0a0+5aff3928d8.nv26.05",
+    "total_memory_bytes": 287428771840
+  },
+  "lower_bounds": {
+    "bf16_w4_d1536_t1024_b1_bias1_silu_normal": {
+      "arithmetic_floor_ms": 0.0002214054054054054,
+      "arithmetic_flops": 12582912.0,
+      "bandwidth_floor_ms": 0.0009985554618271812,
+      "defensible_lower_bound_ms": 0.003013184070587158,
+      "mandatory_bytes": 6325261.0,
+      "serial_width_floor_ms": 1.0666666666666666e-05
+    },
+    "bf16_w4_d1536_t1024_b8_bias1_silu_normal": {
+      "arithmetic_floor_ms": 0.0002214054054054054,
+      "arithmetic_flops": 12582912.0,
+      "bandwidth_floor_ms": 0.0010131145101187993,
+      "defensible_lower_bound_ms": 0.003013184070587158,
+      "mandatory_bytes": 6417484.0,
+      "serial_width_floor_ms": 1.0666666666666666e-05
+    },
+    "bf16_w4_d1536_t128_b1_bias1_silu_normal": {
+      "arithmetic_floor_ms": 2.7675675675675676e-05,
+      "arithmetic_flops": 1572864.0,
+      "bandwidth_floor_ms": 0.00012948906556468448,
+      "defensible_lower_bound_ms": 0.003013184070587158,
+      "mandatory_bytes": 820237.0,
+      "serial_width_floor_ms": 1.0666666666666666e-05
+    },
+    "bf16_w4_d1536_t128_b8_bias1_silu_normal": {
+      "arithmetic_floor_ms": 2.7675675675675676e-05,
+      "arithmetic_flops": 1572864.0,
+      "bandwidth_floor_ms": 0.00014404811385630248,
+      "defensible_lower_bound_ms": 0.003013184070587158,
+      "mandatory_bytes": 912460.0,
+      "serial_width_floor_ms": 1.0666666666666666e-05
+    },
+    "bf16_w4_d1536_t8192_b1_bias1_silu_normal": {
+      "arithmetic_floor_ms": 0.0017712432432432433,
+      "arithmetic_flops": 100663296.0,
+      "bandwidth_floor_ms": 0.007951086631927156,
+      "defensible_lower_bound_ms": 0.007951086631927156,
+      "mandatory_bytes": 50365453.0,
+      "serial_width_floor_ms": 1.0666666666666666e-05
+    },
+    "bf16_w4_d1536_t8192_b8_bias1_silu_normal": {
+      "arithmetic_floor_ms": 0.0017712432432432433,
+      "arithmetic_flops": 100663296.0,
+      "bandwidth_floor_ms": 0.007965645680218774,
+      "defensible_lower_bound_ms": 0.007965645680218774,
+      "mandatory_bytes": 50457676.0,
+      "serial_width_floor_ms": 1.0666666666666666e-05
+    },
+    "bf16_w4_d3072_t1024_b1_bias1_silu_normal": {
+      "arithmetic_floor_ms": 0.0004428108108108108,
+      "arithmetic_flops": 25165824.0,
+      "bandwidth_floor_ms": 0.001997108871372092,
+      "defensible_lower_bound_ms": 0.003013184070587158,
+      "mandatory_bytes": 12650509.0,
+      "serial_width_floor_ms": 1.0666666666666666e-05
+    },
+    "bf16_w4_d3072_t1024_b8_bias1_silu_normal": {
+      "arithmetic_floor_ms": 0.0004428108108108108,
+      "arithmetic_flops": 25165824.0,
+      "bandwidth_floor_ms": 0.0020262170222797122,
+      "defensible_lower_bound_ms": 0.003013184070587158,
+      "mandatory_bytes": 12834892.0,
+      "serial_width_floor_ms": 1.0666666666666666e-05
+    },
+    "bf16_w4_d3072_t128_b1_bias1_silu_normal": {
+      "arithmetic_floor_ms": 5.535135135135135e-05,
+      "arithmetic_flops": 3145728.0,
+      "bandwidth_floor_ms": 0.0002589760788470989,
+      "defensible_lower_bound_ms": 0.003013184070587158,
+      "mandatory_bytes": 1640461.0,
+      "serial_width_floor_ms": 1.0666666666666666e-05
+    },
+    "bf16_w4_d3072_t128_b8_bias1_silu_normal": {
+      "arithmetic_floor_ms": 5.535135135135135e-05,
+      "arithmetic_flops": 3145728.0,
+      "bandwidth_floor_ms": 0.00028808422975471853,
+      "defensible_lower_bound_ms": 0.003013184070587158,
+      "mandatory_bytes": 1824844.0,
+      "serial_width_floor_ms": 1.0666666666666666e-05
+    },
+    "bf16_w4_d3072_t8192_b1_bias1_silu_normal": {
+      "arithmetic_floor_ms": 0.0035424864864864866,
+      "arithmetic_flops": 201326592.0,
+      "bandwidth_floor_ms": 0.01590217121157204,
+      "defensible_lower_bound_ms": 0.01590217121157204,
+      "mandatory_bytes": 100730893.0,
+      "serial_width_floor_ms": 1.0666666666666666e-05
+    },
+    "bf16_w4_d3072_t8192_b8_bias1_silu_normal": {
+      "arithmetic_floor_ms": 0.0035424864864864866,
+      "arithmetic_flops": 201326592.0,
+      "bandwidth_floor_ms": 0.01593127936247966,
+      "defensible_lower_bound_ms": 0.01593127936247966,
+      "mandatory_bytes": 100915276.0,
+      "serial_width_floor_ms": 1.0666666666666666e-05
+    }
+  }
+}
