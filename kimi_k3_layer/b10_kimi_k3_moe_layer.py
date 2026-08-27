@@ -138,6 +138,12 @@ class Routing(str, Enum):
     # 16384) with bit-identical expert IDs; see
     # kimi_k3_layer/kernels/routing_permutation_results.md.
     RADIX = "radix"
+    # Route exactly as baseline_forward/stock_forward do: hand RAW logits
+    # to the MoE module so the fused trtllm-gen kernel selects experts
+    # on-device. REFERENCE is routing_method.apply in Python, which the
+    # baseline never calls here (fused_moe_trtllm_gen only uses it under
+    # post_quant_comm, i.e. DP+alltoall), so REFERENCE is NOT the baseline.
+    IN_KERNEL = "in_kernel"
     REFERENCE = "reference"
     # (The CuTeDSL and Triton routing kernels measured slower than
     # radix at EVERY size and are deliberately NOT layer backends;
@@ -483,7 +489,9 @@ class KimiK3MoEReference(TrtKimiK3MoE):
         )
 
         def routed_branch():
-            logits = self.gate(h)
+            # same bench hook the B10 and stock paths apply, or the two
+            # sides route differently and the comparison is meaningless
+            logits = _bench_doctor_logits(self.gate(h))
             latent = self.fc1_latent_proj(h)
             return self.experts(
                 latent,
@@ -764,6 +772,12 @@ class B10KimiK3MoELayer(KimiK3MoEReference):
             # run_moe's precomputed handoff requires bf16 scales (the
             # other routings emit bf16 natively via fmt="trtllm_gen").
             return ids, scales.to(torch.bfloat16)
+        # IN_KERNEL is handled by the prefill paths that can hand raw
+        # logits to the MoE module; the decode and sharded-prefill paths
+        # consume precomputed ids (the latter feeds a pre-quantized
+        # latent, which the module rejects), so they keep radix.
+        if routing is Routing.IN_KERNEL:
+            routing = Routing.RADIX
         assert routing is Routing.RADIX, routing
         if _RADIX_PACKED:
             from kimi_k3_layer.kernels.routing import (
@@ -1111,10 +1125,20 @@ class B10KimiK3MoELayer(KimiK3MoEReference):
             shared_ref = (
                 self._fork_shared(h, out=shared_dst)
                 if cfg.prefill_overlap_shared_branch else None)
-            ids_scales = self._route(self.gate(h), cfg.routing)
-            routed = self._experts(
-                h @ self._fc1_full.T, ids_scales,
-                cfg.prefill_expert_backend, out=routed_dst)
+            if cfg.routing is Routing.IN_KERNEL:
+                routed = self.experts(
+                    h @ self._fc1_full.T,
+                    _bench_doctor_logits(self.gate(h)),
+                    all_rank_num_tokens=None, use_dp_padding=False,
+                ).view(-1, self.moe_hidden_size)
+                if routed_dst is not None:
+                    routed_dst.copy_(routed)
+                    routed = routed_dst
+            else:
+                ids_scales = self._route(self.gate(h), cfg.routing)
+                routed = self._experts(
+                    h @ self._fc1_full.T, ids_scales,
+                    cfg.prefill_expert_backend, out=routed_dst)
             reduced = rmsnorm_column_slice_cutedsl(
                 self._comm().all_reduce(routed), self._norm_weight,
                 RMS_EPS, self._rank * self._latent_width,
@@ -1131,9 +1155,17 @@ class B10KimiK3MoELayer(KimiK3MoEReference):
         shared_ref = (
             self._fork_shared(h, out=shared_dst)
             if cfg.prefill_overlap_shared_branch else None)
-        ids_scales = self._route(self.gate(h), cfg.routing)
-        routed = self._experts(
-            h @ self._fc1_full.T, ids_scales, cfg.prefill_expert_backend)
+        if cfg.routing is Routing.IN_KERNEL:
+            routed = self.experts(
+                h @ self._fc1_full.T,
+                _bench_doctor_logits(self.gate(h)),
+                all_rank_num_tokens=None,
+                use_dp_padding=False,
+            ).view(-1, self.moe_hidden_size)
+        else:
+            ids_scales = self._route(self.gate(h), cfg.routing)
+            routed = self._experts(
+                h @ self._fc1_full.T, ids_scales, cfg.prefill_expert_backend)
         shared = (self._join_shared(shared_ref)
                   if shared_ref is not None
                   else self._shared_inline(h, out=shared_dst))

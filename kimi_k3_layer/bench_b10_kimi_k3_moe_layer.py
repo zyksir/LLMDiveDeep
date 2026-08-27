@@ -173,13 +173,30 @@ def _enum_or_bool(field: str, value: str):
 
 
 def _sweep(spec: str):
+    """``AXIS=V[,V...]`` groups, ``;``-separated, so ONE run reverts every
+    field against the same reference."""
     if not spec:
-        return None, ()
-    axis, sep, values = spec.partition("=")
-    if not sep:
-        raise ValueError("--sweep expects AXIS=VALUE[,VALUE...]")
-    return axis, tuple(_enum_or_bool(axis, value)
-                       for value in values.split(","))
+        return ()
+    groups = []
+    for part in spec.split(";"):
+        part = part.strip()
+        if not part:
+            continue
+        if "&" in part:
+            combo = {}
+            for one in part.split("&"):
+                axis, sep, value = one.partition("=")
+                if not sep:
+                    raise ValueError("--sweep expects AXIS=VALUE")
+                combo[axis] = _enum_or_bool(axis, value)
+            groups.append((None, combo))
+            continue
+        axis, sep, values = part.partition("=")
+        if not sep:
+            raise ValueError("--sweep expects AXIS=VALUE[,VALUE...]")
+        groups.append((axis, tuple(_enum_or_bool(axis, value)
+                                   for value in values.split(","))))
+    return tuple(groups)
 
 
 def _capture(fn, iterations: int, world: int, *, graphpatch: bool = False,
@@ -432,8 +449,8 @@ def main() -> None:
             f"--profile sizes must also appear in --sizes: "
             f"{sorted(unknown_profile_sizes)}"
         )
-    axis, sweep_values = _sweep(args.sweep)
-    if args.mode == "deploy" and (axis or args.include_all_off):
+    sweeps = _sweep(args.sweep)
+    if args.mode == "deploy" and (sweeps or args.include_all_off):
         parser.error("DEPLOY has no sweeps; use --mode exp")
 
     import torch.distributed as dist
@@ -566,12 +583,19 @@ def main() -> None:
         variants = [("new", None)]
         if args.include_all_off:
             variants.append(("all_off", ExperimentConfig.all_off()))
-        if axis:
+        if sweeps:
             base = measured_config(tokens)
-            variants.extend((
-                f"{axis}={value.value if hasattr(value, 'value') else value}",
-                replace(base, **{axis: value}),
-            ) for value in sweep_values)
+            for axis, sweep_values in sweeps:
+                if axis is None:      # combined: apply every axis at once
+                    label = "+".join(
+                        f"{k}={v.value if hasattr(v, 'value') else v}"
+                        for k, v in sweep_values.items())
+                    variants.append((label, replace(base, **sweep_values)))
+                    continue
+                variants.extend((
+                    f"{axis}={value.value if hasattr(value, 'value') else value}",
+                    replace(base, **{axis: value}),
+                ) for value in sweep_values)
 
         if rank == 0:
             print(f"B={tokens:>5} baseline={reference_us:8.2f} us",
@@ -585,6 +609,10 @@ def main() -> None:
                 "rel_error": 0.0,
                 "tie_excluded_error": 0.0,
                 "tie_rows": 0,
+                "max_abs_diff": 0.0,
+                "rel_max_diff": 0.0,
+                "rows_off": 0,
+                "rows_total": 0,
             })
 
         for label, exp_config in variants:
@@ -638,10 +666,22 @@ def main() -> None:
                 # replay in _time_graph.
                 raw, clean, ties = _tie_aware_error(
                     layer, inputs[-1], output, reference)
+                d = (output.float() - reference.float()).abs()
+                d = d.reshape(-1, d.shape[-1])
+                max_abs = d.max().item()
+                ref_absmax = reference.float().abs().max().item()
+                row_max = d.amax(-1)
+                rows_off = int((row_max > 1e-3 * ref_absmax).sum())
                 speedup = (reference_us - latency) / reference_us * 100
-                print(f"  {label:<28} {latency:8.2f} us "
-                      f"{speedup:+6.1f}% err={raw:.2e} "
-                      f"clean={clean:.2e} ties={ties}", flush=True)
+                which = ""
+                if 0 < rows_off <= 12:
+                    idx = torch.nonzero(
+                        row_max > 1e-3 * ref_absmax).flatten().tolist()
+                    which = f" rows={idx}"
+                print(f"  {label:<52} {latency:8.2f} us "
+                      f"{speedup:+6.1f}% maxdiff={max_abs:.3e} "
+                      f"rel={max_abs / max(ref_absmax, 1e-9):.2e} "
+                      f"rows_off={rows_off}/{d.shape[0]}{which}", flush=True)
                 rows.append({
                     "tokens": tokens,
                     "mode": args.mode,
@@ -651,6 +691,10 @@ def main() -> None:
                     "rel_error": raw,
                     "tie_excluded_error": clean,
                     "tie_rows": ties,
+                    "max_abs_diff": max_abs,
+                    "rel_max_diff": max_abs / max(ref_absmax, 1e-9),
+                    "rows_off": rows_off,
+                    "rows_total": d.shape[0],
                 })
         if world > 1:
             dist.barrier()
