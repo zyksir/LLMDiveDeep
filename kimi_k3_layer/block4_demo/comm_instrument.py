@@ -59,7 +59,8 @@ def _allreduce_labels(stack: torch.nn.Module) -> dict[int, str]:
         if isinstance(module, AllReduce):
             labels[id(module)] = f"allreduce[{name}]"
     for idx, block in enumerate(stack.blocks):
-        shared_ar = getattr(block.moe.shared_experts, "allreduce", None)
+        shared = getattr(block.moe, "shared_experts", None)
+        shared_ar = getattr(shared, "allreduce", None) if shared is not None else None
         if shared_ar is not None:
             labels[id(shared_ar)] = f"allreduce[block{idx}.moe.shared_experts]"
     return labels
@@ -79,17 +80,28 @@ def count_comm_calls(stack: torch.nn.Module) -> Iterator[dict[str, int]]:
     original_ar_forward = AllReduce.forward
 
     def wrapped_ar_forward(self, *args, **kwargs):
-        bump(labels.get(id(self), "allreduce[unattributed]"))
+        # An AllReduce over a single-rank group is a passthrough: no kernel,
+        # no cross-rank traffic (confirmed by the profiler scan). Count it
+        # under a separate noop key so the CP verdict ignores it.
+        mapping = getattr(self, "mapping", None)
+        single_rank = mapping is not None and getattr(mapping, "tp_size", 1) <= 1
+        key = labels.get(id(self), "allreduce[unattributed]")
+        bump(f"noop_{key}" if single_rank else key)
         return original_ar_forward(self, *args, **kwargs)
 
     AllReduce.forward = wrapped_ar_forward
 
     # All four blocks share one routed MoE module; wrap its comm instance once.
-    moe = stack.blocks[0].moe.routed_moe
-    original_dispatch = moe.comm.dispatch
-    original_combine = moe.comm.combine
-    moe.comm.dispatch = lambda *a, **k: (bump("moe_a2a_dispatch"), original_dispatch(*a, **k))[1]
-    moe.comm.combine = lambda *a, **k: (bump("moe_a2a_combine"), original_combine(*a, **k))[1]
+    # MegaMoE fuses dispatch/combine in-kernel and has no host comm object.
+    moe0 = stack.blocks[0].moe
+    moe = getattr(moe0, "routed_moe", None) or getattr(moe0, "experts", moe0)
+    comm = getattr(moe, "comm", None)
+    has_host_comm = comm is not None and hasattr(comm, "dispatch")
+    if has_host_comm:
+        original_dispatch = comm.dispatch
+        original_combine = comm.combine
+        comm.dispatch = lambda *a, **k: (bump("moe_a2a_dispatch"), original_dispatch(*a, **k))[1]
+        comm.combine = lambda *a, **k: (bump("moe_a2a_combine"), original_combine(*a, **k))[1]
 
     original_gather = stack.gather_routed
 
@@ -102,8 +114,9 @@ def count_comm_calls(stack: torch.nn.Module) -> Iterator[dict[str, int]]:
         yield counts
     finally:
         AllReduce.forward = original_ar_forward
-        moe.comm.dispatch = original_dispatch
-        moe.comm.combine = original_combine
+        if has_host_comm:
+            comm.dispatch = original_dispatch
+            comm.combine = original_combine
         if "gather_routed" in stack.__dict__:
             del stack.__dict__["gather_routed"]
 
@@ -139,7 +152,9 @@ def classify_kernels(kernel_counts: dict[str, int]) -> dict[str, list[str]]:
 def cp_verdict(counts: dict[str, int], kernel_counts: dict[str, int]) -> dict[str, Any]:
     """CP mode passes iff the only cross-rank comm is the MoE A2A."""
     non_a2a_calls = {
-        k: v for k, v in counts.items() if not k.startswith("moe_a2a_")
+        k: v
+        for k, v in counts.items()
+        if not k.startswith("moe_a2a_") and not k.startswith("noop_")
     }
     non_a2a_kernels = classify_kernels(kernel_counts)["non_a2a_comm_kernels"]
     passed = not non_a2a_calls and not non_a2a_kernels

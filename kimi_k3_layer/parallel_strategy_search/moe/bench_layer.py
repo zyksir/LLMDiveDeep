@@ -183,6 +183,21 @@ def _stats(values: list[float]) -> dict[str, float]:
     }
 
 
+def _phase_targets(layer: KimiK3MoELayerBaseline) -> dict[str, tuple[Any, str]]:
+    """Wrappable phases for a layer; MegaMoE fuses dispatch/combine in-kernel."""
+    targets: dict[str, tuple[Any, str]] = {
+        "shared": (layer, "shared_forward"),
+        "expert_forward": (layer.routed_moe.backend, "run_moe"),
+    }
+    comm = getattr(layer.routed_moe, "comm", None)
+    if comm is not None and hasattr(comm, "dispatch"):
+        targets["dispatch"] = (comm, "dispatch")
+        targets["combine"] = (comm, "combine")
+    if layer.mode == "tp":
+        targets["tp_allreduce"] = (layer, "allreduce_forward")
+    return targets
+
+
 @contextmanager
 def _record_phases(
     layer: KimiK3MoELayerBaseline,
@@ -190,14 +205,7 @@ def _record_phases(
     records: dict[str, list[tuple[int, torch.cuda.Event, torch.cuda.Event]]],
 ) -> Iterator[None]:
     """CUDA-event wrap of each phase (pattern of bench_a2a_megamoe_pipeline)."""
-    targets: dict[str, tuple[Any, str]] = {
-        "shared": (layer, "shared_forward"),
-        "dispatch": (layer.routed_moe.comm, "dispatch"),
-        "expert_forward": (layer.routed_moe.backend, "run_moe"),
-        "combine": (layer.routed_moe.comm, "combine"),
-    }
-    if layer.mode == "tp":
-        targets["tp_allreduce"] = (layer, "allreduce_forward")
+    targets = _phase_targets(layer)
     originals: dict[str, tuple[Any, str, Callable[..., Any]]] = {}
     for phase, (owner, method_name) in targets.items():
         original = getattr(owner, method_name)
@@ -239,9 +247,7 @@ def _benchmark_layer(
 
     starts = [torch.cuda.Event(enable_timing=True) for _ in range(iters)]
     ends = [torch.cuda.Event(enable_timing=True) for _ in range(iters)]
-    phase_names = ["shared", "dispatch", "expert_forward", "combine"]
-    if layer.mode == "tp":
-        phase_names.append("tp_allreduce")
+    phase_names = list(_phase_targets(layer))
     phase_records: dict[str, list] = {name: [] for name in phase_names}
     current_iteration = [-1]
 
@@ -266,6 +272,42 @@ def _benchmark_layer(
     return result
 
 
+def _benchmark_layer_graph(
+    run: Callable[[], torch.Tensor],
+    warmup: int,
+    iters: int,
+) -> dict[str, Any]:
+    """Event-timed CUDA-graph replay loop (total only; no phase wrapping).
+
+    Yikai's benchmarking rule: latency tables must be graph-replay timed —
+    eager numbers at ~1ms scale are dominated by launch overhead.
+    """
+    with torch.inference_mode():
+        for _ in range(3):
+            run()
+        torch.cuda.synchronize()
+        mpi_barrier()
+        graph = torch.cuda.CUDAGraph()
+        with torch.cuda.graph(graph):
+            run()
+        torch.cuda.synchronize()
+        for _ in range(warmup):
+            graph.replay()
+        torch.cuda.synchronize()
+        mpi_barrier()
+        starts = [torch.cuda.Event(enable_timing=True) for _ in range(iters)]
+        ends = [torch.cuda.Event(enable_timing=True) for _ in range(iters)]
+        for i in range(iters):
+            starts[i].record()
+            graph.replay()
+            ends[i].record()
+        torch.cuda.synchronize()
+    return {
+        "total": _stats([starts[i].elapsed_time(ends[i]) for i in range(iters)]),
+        "phases": {},
+    }
+
+
 def _capture_chrome_trace(
     run: Callable[[], torch.Tensor],
     out_path: Path,
@@ -288,6 +330,44 @@ def _capture_chrome_trace(
             ]
         ) as prof:
             run()
+            torch.cuda.synchronize()
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    prof.export_chrome_trace(str(out_path))
+    return str(out_path)
+
+
+def _capture_graph_chrome_trace(
+    run: Callable[[], torch.Tensor],
+    out_path: Path,
+    profiled_replays: int = 3,
+) -> str:
+    """Chrome trace of CUDA-graph replays (bubble-free kernel timeline).
+
+    Profiles `profiled_replays` back-to-back replays: read steady-state kernel
+    times from replay 2+ — replay 1 absorbs cross-rank profiler start skew in
+    the A2A spin kernels.
+    """
+    with torch.inference_mode():
+        for _ in range(3):
+            run()
+        torch.cuda.synchronize()
+        mpi_barrier()
+        graph = torch.cuda.CUDAGraph()
+        with torch.cuda.graph(graph):
+            run()
+        torch.cuda.synchronize()
+        for _ in range(3):
+            graph.replay()
+        torch.cuda.synchronize()
+        mpi_barrier()
+        with torch.profiler.profile(
+            activities=[
+                torch.profiler.ProfilerActivity.CPU,
+                torch.profiler.ProfilerActivity.CUDA,
+            ]
+        ) as prof:
+            for _ in range(profiled_replays):
+                graph.replay()
             torch.cuda.synchronize()
     out_path.parent.mkdir(parents=True, exist_ok=True)
     prof.export_chrome_trace(str(out_path))
@@ -322,6 +402,8 @@ def _build_routed_cached(
     max_local_tokens: int,
     device: torch.device,
     weight_cache_dir: Path,
+    backend: str = "TRTLLM",
+    comm_method: str = "NVLINK_ONE_SIDED",
 ) -> torch.nn.Module:
     """Full-scale routed module with the cached deterministic local weights."""
     from _torch.modules.moe.quantize_utils import MXFP4MXFP8QuantizeUtil
@@ -344,14 +426,16 @@ def _build_routed_cached(
             mapping,
             max_num_tokens=max(max_local_tokens, 1),
             device=device,
-            backend="TRTLLM",
-            comm_method="NVLINK_ONE_SIDED",
+            backend=backend,
+            comm_method=comm_method,
         )
     finally:
         MXFP4MXFP8QuantizeUtil.prepare_weights_from_backend = original
-    if _backend_name_from_module(moe) != "TRTLLM":
-        raise RuntimeError("routed path did not construct TRTLLMGenFusedMoE")
-    if _comm_method_name(moe) != "NVLinkOneSided":
+    if _backend_name_from_module(moe) != backend:
+        raise RuntimeError(
+            f"routed path built {_backend_name_from_module(moe)}, expected {backend}"
+        )
+    if comm_method == "NVLINK_ONE_SIDED" and _comm_method_name(moe) != "NVLinkOneSided":
         raise RuntimeError(f"routed path built {_comm_method_name(moe)}, not NVLinkOneSided")
     return moe
 
@@ -362,6 +446,7 @@ def _build_routed_with_reference(
     mapping: Any,
     max_local_tokens: int,
     device: torch.device,
+    comm_method: str = "NVLINK_ONE_SIDED",
 ):
     """Reduced-scale routed module + unchanged sequential reference module.
 
@@ -414,7 +499,10 @@ def _build_routed_with_reference(
         quant_config=quant_config,
         num_local_experts=mc.num_experts // mapping.moe_ep_size,
     )
-    os.environ["TRTLLM_FORCE_COMM_METHOD"] = "NVLINK_ONE_SIDED"
+    if comm_method == "NONE":
+        os.environ.pop("TRTLLM_FORCE_COMM_METHOD", None)
+    else:
+        os.environ["TRTLLM_FORCE_COMM_METHOD"] = comm_method
     try:
         moe = _create_moe_for_benchmark(
             routing_method=routing_method,
@@ -435,13 +523,23 @@ def _build_routed_with_reference(
     moe.load_weights([backend_weights])
     moe.post_load_weights()
     moe.cuda(f"cuda:{torch.cuda.current_device()}")
-    if _comm_method_name(moe) != "NVLinkOneSided":
+    if comm_method == "NVLINK_ONE_SIDED" and _comm_method_name(moe) != "NVLinkOneSided":
         raise RuntimeError(f"routed path built {_comm_method_name(moe)}, not NVLinkOneSided")
 
     ref_module = quantize_util.create_ref_module(routing_method, **ref_module_kwargs)
     ref_module.load_weights([ref_weights])
     ref_module.cuda(device)
     return moe, ref_module, routing_method
+
+
+def _destroy_modules(routed_by_mode: dict[str, torch.nn.Module]) -> None:
+    seen: set[int] = set()
+    for module in routed_by_mode.values():
+        if id(module) in seen:
+            continue
+        seen.add(id(module))
+        if hasattr(module, "destroy"):
+            module.destroy()
 
 
 def _module_weight_bytes(module: torch.nn.Module) -> int:
@@ -458,18 +556,23 @@ def _module_weight_bytes(module: torch.nn.Module) -> int:
 def _build_layers(
     *,
     modes: list[str],
-    routed: torch.nn.Module,
+    routed_by_mode: dict[str, torch.nn.Module],
     world_size: int,
     rank: int,
     device: torch.device,
 ) -> dict[str, KimiK3MoELayerBaseline]:
+    """Modes: 'tp', 'cp', 'cp_mm' (CP token layout, MegaMoE routed path)."""
     layers = {}
     for mode in modes:
+        layer_mode = "tp" if mode == "tp" else "cp"
         shared = KimiK3SharedExperts(
-            mode=mode, world_size=world_size, rank=rank, device=device
+            mode=layer_mode, world_size=world_size, rank=rank, device=device
         )
         layers[mode] = KimiK3MoELayerBaseline(
-            mode=mode, routed_moe=routed, shared_experts=shared, rank=rank
+            mode=layer_mode,
+            routed_moe=routed_by_mode[mode],
+            shared_experts=shared,
+            rank=rank,
         )
     return layers
 
@@ -495,6 +598,10 @@ def _environment_snapshot(device: torch.device) -> dict[str, Any]:
 def run_correctness(args: argparse.Namespace) -> None:
     rank, world_size = mpi_rank(), mpi_world_size()
     device = torch.device("cuda", _set_device_from_local_rank())
+    # Ambient device context for the whole run, as bench_moe/worker.py:523 and
+    # the unittest worker do. Building TRTLLMGen W4A8_MXFP4_MXFP8 without it
+    # yields a scrambled weight layout at the K3 shape (cos~0 vs reference).
+    torch.device(device).__enter__()
     if args.num_experts % world_size:
         raise ValueError("--num-experts must divide world size")
 
@@ -511,8 +618,34 @@ def run_correctness(args: argparse.Namespace) -> None:
         max_local_tokens=max_local,
         device=device,
     )
+    routed_by_mode = {mode: routed for mode in args.modes if mode in ("tp", "cp")}
+    if "cp_mm" in args.modes:
+        # Reduced-scale MegaMoE through the unchanged stock builder: same
+        # seed-42 master weights as the TRTLLM module, so the same sequential
+        # reference applies.
+        model_reduced = ModelSpec(
+            name="kimi_k3_reduced_mm",
+            num_experts=args.num_experts,
+            top_k=TOP_K,
+            hidden_size=HIDDEN_SIZE,
+            intermediate_size=MOE_INTERMEDIATE,
+            quant_algo="W4A8_MXFP4_MXFP8",
+            routing_method="RENORMALIZE",
+        )
+        routed_by_mode["cp_mm"] = _build_module(
+            model_reduced,
+            mapping,
+            max_num_tokens=max(max_local, 1),
+            device=device,
+            backend="MEGAMOE_DEEPGEMM",
+            comm_method="NONE",
+        )
     layers = _build_layers(
-        modes=["tp", "cp"], routed=routed, world_size=world_size, rank=rank, device=device
+        modes=list(args.modes),
+        routed_by_mode=routed_by_mode,
+        world_size=world_size,
+        rank=rank,
+        device=device,
     )
     # Sequential single-GPU shared reference: TP1 GatedMLP, identical weights.
     ref_shared = KimiK3SharedExperts(mode="cp", world_size=1, rank=0, device=device)
@@ -562,7 +695,7 @@ def run_correctness(args: argparse.Namespace) -> None:
                 )
             if os.environ.get("TPB_DEBUG_ONLY") == "1":
                 mpi_barrier()
-                routed.destroy()
+                _destroy_modules(routed_by_mode)
                 return
         with torch.inference_mode():
             ref_total = (
@@ -578,12 +711,13 @@ def run_correctness(args: argparse.Namespace) -> None:
                     inputs["logits_local"],
                     inputs["all_rank_num_tokens"],
                     hidden_full=inputs["hidden_full"],
+                    router_logits_full=inputs["logits_full"],
                 )
                 _run_layer_autotune(layer, run)
                 outputs[mode] = run().clone()
         torch.cuda.synchronize()
         case: dict[str, Any] = {}
-        for mode in ("tp", "cp"):
+        for mode in layers:
             metrics = _correctness(
                 outputs[mode],
                 ref_local,
@@ -596,16 +730,21 @@ def run_correctness(args: argparse.Namespace) -> None:
                 f"rank{i}": m for i, m in enumerate(gathered)
             }
             all_passed &= all(m["passed"] for m in gathered)
-        cross = _correctness(
-            outputs["tp"],
-            outputs["cp"],
-            atol=args.atol,
-            rtol=args.rtol,
-            min_close_fraction=args.min_close_fraction,
-        )
-        gathered_cross = mpi_allgather(cross)
-        case["tp_vs_cp"] = {f"rank{i}": m for i, m in enumerate(gathered_cross)}
-        all_passed &= all(m["passed"] for m in gathered_cross)
+        mode_list = list(layers)
+        for i, mode_a in enumerate(mode_list):
+            for mode_b in mode_list[i + 1 :]:
+                cross = _correctness(
+                    outputs[mode_a],
+                    outputs[mode_b],
+                    atol=args.atol,
+                    rtol=args.rtol,
+                    min_close_fraction=args.min_close_fraction,
+                )
+                gathered_cross = mpi_allgather(cross)
+                case[f"{mode_a}_vs_{mode_b}"] = {
+                    f"rank{i}": m for i, m in enumerate(gathered_cross)
+                }
+                all_passed &= all(m["passed"] for m in gathered_cross)
         cases[str(global_tokens)] = case
         if rank == 0:
             print(f"[correctness] tokens={global_tokens} done", flush=True)
@@ -641,7 +780,7 @@ def run_correctness(args: argparse.Namespace) -> None:
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text(json.dumps(receipt, indent=2) + "\n")
         print(f"[correctness] status={receipt['status']} receipt={out}", flush=True)
-    routed.destroy()
+    _destroy_modules(routed_by_mode)
     if not all_passed:
         raise AssertionError("correctness gate failed; see receipt")
 
@@ -649,6 +788,8 @@ def run_correctness(args: argparse.Namespace) -> None:
 def run_measure(args: argparse.Namespace) -> None:
     rank, world_size = mpi_rank(), mpi_world_size()
     device = torch.device("cuda", _set_device_from_local_rank())
+    # Same ambient device context as run_correctness (bench_moe/worker.py:523).
+    torch.device(device).__enter__()
     if NUM_EXPERTS % world_size:
         raise ValueError(f"{NUM_EXPERTS} experts must divide world size {world_size}")
 
@@ -663,20 +804,36 @@ def run_measure(args: argparse.Namespace) -> None:
     max_local = max(
         max(_per_rank_tokens(size, world_size)) for _, size in grid
     )
-    routed = _build_routed_cached(
-        mapping=mapping,
-        max_local_tokens=max_local,
-        device=device,
-        weight_cache_dir=args.weight_cache_dir,
-    )
+    routed_by_mode: dict[str, torch.nn.Module] = {}
+    base_modes = [m for m in args.modes if m in ("tp", "cp")]
+    if base_modes:
+        routed = _build_routed_cached(
+            mapping=mapping,
+            max_local_tokens=max_local,
+            device=device,
+            weight_cache_dir=args.weight_cache_dir,
+        )
+        for m in base_modes:
+            routed_by_mode[m] = routed
+    if "cp_mm" in args.modes:
+        routed_by_mode["cp_mm"] = _build_routed_cached(
+            mapping=mapping,
+            max_local_tokens=max_local,
+            device=device,
+            weight_cache_dir=args.weight_cache_dir,
+            backend="MEGAMOE_DEEPGEMM",
+            comm_method="NONE",
+        )
     layers = _build_layers(
         modes=list(args.modes),
-        routed=routed,
+        routed_by_mode=routed_by_mode,
         world_size=world_size,
         rank=rank,
         device=device,
     )
-    routed_bytes = _module_weight_bytes(routed)
+    routed_bytes = {
+        mode: _module_weight_bytes(module) for mode, module in routed_by_mode.items()
+    }
     shared_bytes = {
         mode: layer.shared_experts.weight_bytes() for mode, layer in layers.items()
     }
@@ -688,7 +845,7 @@ def run_measure(args: argparse.Namespace) -> None:
             rank=rank,
             world_size=world_size,
             num_experts=NUM_EXPERTS,
-            routing_method=routed.routing_method,
+            routing_method=next(iter(routed_by_mode.values())).routing_method,
             device=device,
             seed=args.seed,
             need_full="tp" in args.modes,
@@ -706,6 +863,7 @@ def run_measure(args: argparse.Namespace) -> None:
                 inputs["logits_local"],
                 inputs["all_rank_num_tokens"],
                 hidden_full=inputs["hidden_full"],
+                router_logits_full=inputs["logits_full"],
             )
             _run_layer_autotune(layer, mode_runs[mode])
         for mode in args.modes:
@@ -716,9 +874,22 @@ def run_measure(args: argparse.Namespace) -> None:
                 finite = bool(torch.isfinite(first).all())
             torch.cuda.synchronize()
             mpi_barrier()
-            timing = _benchmark_layer(layer, run, args.warmup, args.iters)
+            if args.graph_timing:
+                timing = _benchmark_layer_graph(run, args.warmup, args.iters)
+            else:
+                timing = _benchmark_layer(layer, run, args.warmup, args.iters)
             trace_path = None
-            if args.trace:
+            if args.graph_trace:
+                trace_path = _capture_graph_chrome_trace(
+                    run,
+                    LOCAL_RESULTS
+                    / "traces"
+                    / (
+                        f"tp_baseline_{phase}_{mode}_bs{size}"
+                        f"_w{world_size}_graph_rank{rank}.json"
+                    ),
+                )
+            elif args.trace:
                 trace_path = _capture_chrome_trace(
                     run,
                     LOCAL_RESULTS
@@ -740,7 +911,7 @@ def run_measure(args: argparse.Namespace) -> None:
                 "phase_median_ms": {
                     name: max(t["phases"][name]["median_ms"] for t in gathered)
                     for name in gathered[0]["phases"]
-                },
+                } if gathered[0]["phases"] else {},
                 "per_rank": {f"rank{i}": t for i, t in enumerate(gathered)},
                 "chrome_traces": {
                     "note": "captured in a separate pass AFTER the timed "
@@ -748,7 +919,7 @@ def run_measure(args: argparse.Namespace) -> None:
                     "above",
                     "per_rank": mpi_allgather(trace_path),
                 }
-                if args.trace
+                if (args.trace or args.graph_trace)
                 else None,
             }
             rows.append(row)
@@ -763,8 +934,9 @@ def run_measure(args: argparse.Namespace) -> None:
     receipt = {
         "kind": "measure",
         "label": {
-            "tp": "finalized TRT-LLM reference (shared TP-sharded + allreduce)",
+            "tp": "finalized TRT-LLM reference (shared TP-sharded + allreduce; routed EP+A2A)",
             "cp": "CP emulation (tokens split, shared replicated, no TP collective)",
+            "cp_mm": "CP emulation + MegaMoEDeepGemm routed path (comm fused in-kernel)",
         },
         "shape": {
             "world_size": world_size,
@@ -777,7 +949,8 @@ def run_measure(args: argparse.Namespace) -> None:
             "activation": "SwiGLU",
             "routing": "forced balanced_alltoall projected through native routing",
         },
-        "timing": {"warmup": args.warmup, "iters": args.iters, "launch": "eager"},
+        "timing": {"warmup": args.warmup, "iters": args.iters,
+                   "launch": "cuda_graph" if args.graph_timing else "eager"},
         "weights": {
             "routed_bytes_per_gpu": routed_bytes,
             "shared_bytes_per_gpu": shared_bytes,
@@ -797,7 +970,7 @@ def run_measure(args: argparse.Namespace) -> None:
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text(json.dumps(receipt, indent=2) + "\n")
         print(f"[measure] receipt={out}", flush=True)
-    routed.destroy()
+    _destroy_modules(routed_by_mode)
 
 
 def parse_args() -> argparse.Namespace:
@@ -805,6 +978,9 @@ def parse_args() -> argparse.Namespace:
     sub = parser.add_subparsers(dest="command", required=True)
 
     corr = sub.add_parser("correctness")
+    corr.add_argument(
+        "--modes", nargs="+", choices=("tp", "cp", "cp_mm"), default=["tp", "cp"]
+    )
     corr.add_argument("--num-experts", type=int, default=64)
     corr.add_argument("--tokens", type=int, nargs="+", default=[256, 4096])
     corr.add_argument("--seed", type=int, default=1234)
@@ -815,11 +991,18 @@ def parse_args() -> argparse.Namespace:
     meas = sub.add_parser("measure")
     meas.add_argument("--prefill-tokens", type=int, nargs="*", default=[8192, 32768])
     meas.add_argument("--decode-batch-sizes", type=int, nargs="*", default=[64, 512])
-    meas.add_argument("--modes", nargs="+", choices=("tp", "cp"), default=["tp", "cp"])
+    meas.add_argument(
+        "--modes", nargs="+", choices=("tp", "cp", "cp_mm"), default=["tp", "cp"]
+    )
     meas.add_argument("--warmup", type=int, default=20)
     meas.add_argument("--iters", type=int, default=100)
     meas.add_argument("--seed", type=int, default=1234)
     meas.add_argument("--tag", default="cp_vs_tp")
+    meas.add_argument("--graph-trace", action="store_true",
+                      help="capture a CUDA-graph replay trace (3 replays; read "
+                      "steady state from replay 2+)")
+    meas.add_argument("--graph-timing", action="store_true",
+                      help="time CUDA-graph replays (required for real tables)")
     meas.add_argument(
         "--trace",
         action="store_true",

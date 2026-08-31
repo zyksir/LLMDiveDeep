@@ -193,7 +193,7 @@ class KimiK3MoELayerBaseline(nn.Module):
         self,
         hidden_local: torch.Tensor,
         router_logits_local: torch.Tensor,
-        all_rank_num_tokens: list[int],
+        all_rank_num_tokens,
     ) -> torch.Tensor:
         return self.routed_moe.forward(
             hidden_local,
@@ -207,6 +207,7 @@ class KimiK3MoELayerBaseline(nn.Module):
         router_logits_local: torch.Tensor,
         all_rank_num_tokens: list[int],
         hidden_full: Optional[torch.Tensor] = None,
+        router_logits_full: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """Return this rank's [local_tokens, hidden] slice of the layer output."""
         if self.mode == "tp":

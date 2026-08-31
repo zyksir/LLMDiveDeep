@@ -232,7 +232,21 @@ class KimiK3DemoBlock(nn.Module):
         )
         hidden_states, residual = self.post_attention_layernorm(hidden_states, residual)
 
-        if self.mode == "tp":
+        if getattr(self.moe, "is_production_k3_moe", False):
+            # Production KimiK3MoE: full module call; parallelization is
+            # decided by its mapping (tp: fused finalize-AR; cp: A2A).
+            from types import SimpleNamespace
+
+            md = SimpleNamespace(
+                all_rank_num_tokens=(None if self.mode == "tp" else all_rank_num_tokens)
+            )
+            if self.mode == "tp":
+                hidden_states = self.moe(hidden_states, md)
+            else:
+                hidden_states = self.moe(
+                    hidden_states, md, all_rank_num_tokens=all_rank_num_tokens
+                )
+        elif self.mode == "tp":
             # Full replicated tokens in; full tokens out.
             shared_partial = self.moe.shared_forward(hidden_states)
             shared_full = self.moe.allreduce_forward(shared_partial)

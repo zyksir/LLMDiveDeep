@@ -23,7 +23,7 @@ import sys
 from pathlib import Path
 
 PACKAGE_DIR = Path(__file__).resolve().parent
-REPO_ROOT = PACKAGE_DIR.parent.parent  # /node-storage/LLMDiveDeep
+REPO_ROOT = PACKAGE_DIR.parents[2]  # /node-storage/LLMDiveDeep
 # The implementation-reference checkout (branch yikai/optimized-k3). Every
 # harness file this package imports is byte-identical there to the checkout
 # matching the container's installed tensorrt_llm build (verified via
