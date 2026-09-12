@@ -27,6 +27,14 @@ implementations in ``kernels/``; this file only dispatches):
                          RMSNorm kernel serves the norm ops
     trt                  TRT-LLM custom allreduce (MIN_LATENCY; fused
                          RESIDUAL_RMS_NORM kernel for allreduce_norm)
+    sgl:push_res | sgl:pull_res | sgl:push_norm | sgl:pull_norm | sgl:gemm_ar
+                         sglang's vendored Kimi-K3 fused MNNVL kernels:
+                         1shot multicast-push AR / low-SM NVLS 2shot
+                         pull AR (the pull operand rides the torch_symm
+                         staging, whose multicast VA the kernel needs),
+                         fused RMSNorm variants, and single-kernel
+                         GEMM+AR (N=7168, M<=512) — SM100/103 +
+                         multicast only, see backends/sglang_backend.py
     vllm_int8 | vllm_fp8 vLLM/Kraken two-shot per-group quantized AR;
                          explicit lossy API only
     cutedsl              experimental fused boundary kernels; explicit
@@ -89,6 +97,7 @@ from .backends import (
     nccl_backend,
     nccl_symm_backend,
     quantized_backend,
+    sglang_backend,
     torch_lc_backend,
     torch_symm_backend,
     trt_backend,
@@ -203,6 +212,8 @@ class Collectives:
         # Experimental backend; explicit-only unless enable_cutedsl=True.
         self._cutedsl = None
         self._mm_ar = None
+        # None = untried (lazy, collective build), False = unavailable
+        self._sgl: sglang_backend.SglBackend | bool | None = None
         self._quantized = None
         self._planner = Planner(self)
         if self.world == 1:
@@ -278,6 +289,36 @@ class Collectives:
             raise RuntimeError("cutedsl backend unavailable")
         return backend
 
+    def _sgl_state(self):
+        """The sglang (vendored Kimi-K3 fused MNNVL) backend, built on
+        first use. COLLECTIVE on first call (CustomAllReduceV2 symm-slab
+        rendezvous + JIT build, shared process-wide with the K3 blocks)
+        — reached only from explicit ``impl=`` requests and
+        autotune/lazy-tune paths, which are rank-lockstep. False when
+        the probe fails (needs SM100/103, NVLink multicast, a supported
+        world size, bf16) or the group is a proper subgroup (the
+        vendored ops key on world size and rendezvous over WORLD)."""
+        if self._sgl is None:
+            self._sgl = False
+            if (sglang_backend.available()
+                    and self.dtype == torch.bfloat16
+                    and dist.get_world_size(self.group)
+                    == dist.get_world_size()):
+                try:
+                    self._sgl = sglang_backend.SglBackend(
+                        self.ctx, self._symm)
+                except Exception:  # noqa: BLE001 (optional backend)
+                    pass
+        return self._sgl
+
+    def _require_sgl(self):
+        sgl = self._sgl_state()
+        if not sgl:
+            raise RuntimeError(
+                "sgl backend unavailable (needs SM100/103 + NVLink "
+                "multicast + supported whole-world group + bf16)")
+        return sgl
+
     def _trt_state(self):
         """The TRT backend, built on first use. COLLECTIVE on first
         call (IPC workspace rendezvous) — reached only from explicit
@@ -345,15 +386,24 @@ class Collectives:
             assert mm, "b10_multimem backend unavailable"
             assert dtype is None or dtype == self.dtype
             return mm.symm_input(shape, offset)
+        if impl.startswith("sgl:pull"):
+            # the sgl pull kernels reduce in place on the torch_symm
+            # staging buffer (its multicast VA is the kernel operand)
+            assert self._symm is not None, \
+                "no symm staging at this world size"
+            return self._symm.symm_input(shape, dtype, offset)
         raise ValueError(f"impl {impl!r} has no symm staging buffer")
 
     @staticmethod
     def symm_staged(impl: str) -> bool:
         """True when this all_reduce impl pays a stage-in copy that a
         producer can skip by writing into :meth:`symm_input` (the
-        torch_symm family and plain b10_multimem; nccl/trt/flashinfer
-        read their operand directly — nothing to save)."""
-        return impl.startswith("torch_symm") or impl == "b10_multimem"
+        torch_symm family, plain b10_multimem, and the sgl pull family
+        — which stages into the torch_symm buffer; nccl/trt/flashinfer
+        and sgl:push_* read their operand directly or own a private
+        scratch — nothing a producer can target)."""
+        return (impl.startswith("torch_symm") or impl == "b10_multimem"
+                or impl.startswith("sgl:pull"))
 
     @staticmethod
     def staging_overlaps(impl_a: str, impl_b: str) -> bool:
@@ -361,7 +411,10 @@ class Collectives:
         consecutive collectives then need disjoint ``offset`` regions
         for zero-copy producers."""
         def fam(impl: str) -> str:
-            return "torch_symm" if impl.startswith("torch_symm") else impl
+            # sgl:pull_* stages into the torch_symm buffer: one family
+            if impl.startswith(("torch_symm", "sgl:pull")):
+                return "torch_symm"
+            return impl
         return (Collectives.symm_staged(impl_a)
                 and Collectives.symm_staged(impl_b)
                 and fam(impl_a) == fam(impl_b))
@@ -476,6 +529,8 @@ class Collectives:
             return self._flashinfer.all_reduce(x, variant == "1shot")
         if impl == "trt":
             return self._require_trt().all_reduce(x)
+        if family == "sgl":
+            return self._require_sgl().all_reduce(x, variant)
         if family == "torch_symm":
             return self._symm.all_reduce(x, variant)
         if impl == "nccl_symm":
@@ -597,6 +652,10 @@ class Collectives:
             norm, res = self._require_trt().allreduce_norm(
                 x, gamma, eps, residual)
             return norm if residual is None else (norm, res)
+        if family == "sgl":
+            norm, res = self._require_sgl().allreduce_norm(
+                x, gamma, eps, residual, variant)
+            return norm if residual is None else (norm, res)
         if impl == "b10_multimem":
             res_in = residual if residual is not None else \
                 self.ctx.zero_residual(tokens, hidden)
@@ -638,6 +697,8 @@ class Collectives:
             return torch.mm(x, w.T)
         probe = torch.empty((x.shape[0], n), device="meta", dtype=self.dtype)
         impl = self._resolve("gemm_allreduce", probe, impl)
+        if impl == "sgl:gemm_ar":
+            return self._require_sgl().gemm_allreduce(x, w)
         if impl == "cutedsl":
             return self._require_cutedsl().gemm_allreduce(x, w)
         if impl == "seq":

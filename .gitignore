@@ -3,8 +3,5 @@ __pycache__/
 .vscode/
 
 # Local experiments and generated benchmark artifacts.
-*local_debug/
-*local_result/
-*kernel_research/
-# per-node measurement outputs — never committed
-**/local_results/
+*local_result*/
+*kernel_research*/

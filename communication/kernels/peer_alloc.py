@@ -150,28 +150,24 @@ def _alloc_ipc(mapping, nbytes: int):
     return buf, ptrs, mem
 
 
-def _wrap_ptr_as_tensor(ptr: int, nbytes: int):
-    """Minimal wrapper for a raw device pointer (no ownership).
+def _wrap_ptr_as_tensor(ptr: int, nbytes: int) -> torch.Tensor:
+    """Zero-copy uint8 view of a raw device pointer (no ownership).
 
-    The kernels only consume data_ptr(); the sole tensor-like operation
-    needed is the lamport sentinel fill at init, done via a D2D copy.
+    torch ingests objects exposing __cuda_array_interface__, which gives
+    the IpcMemory region full tensor semantics (view/fill/subscript) —
+    required by engines that stage through the buffer (col_quant).
+    The caller must keep the IpcMemory handle alive.
     """
-    class _PtrBuf:
+    class _CAI:
         def __init__(self, ptr, nbytes):
-            self.ptr, self.nbytes = ptr, nbytes
+            self.__cuda_array_interface__ = {
+                "shape": (nbytes,),
+                "typestr": "|u1",
+                "data": (ptr, False),
+                "version": 2,
+            }
 
-        def data_ptr(self):
-            return self.ptr
-
-        def fill_int16(self, value: int) -> None:
-            t = torch.full((self.nbytes // 2,), value, dtype=torch.int16,
-                           device="cuda")
-            import cuda.bindings.runtime as cudart
-            cudart.cudaMemcpy(
-                self.ptr, t.data_ptr(), self.nbytes,
-                cudart.cudaMemcpyKind.cudaMemcpyDeviceToDevice)
-
-    return _PtrBuf(ptr, nbytes)
+    return torch.as_tensor(_CAI(ptr, nbytes), device="cuda")
 
 
 def alloc_peer_buffer(group, rank: int, world: int, nbytes: int,
@@ -199,7 +195,7 @@ def alloc_peer_buffer(group, rank: int, world: int, nbytes: int,
                                   world, torch.cuda.device_count()))
             buf, ptrs, keep = _alloc_ipc(mapping, nbytes)
             if sentinel_i16 is not None:
-                buf.fill_int16(sentinel_i16)
+                buf.view(torch.int16).fill_(sentinel_i16)
             return buf, ptrs, keep, "ipc"
         except Exception:
             if mode == "ipc":

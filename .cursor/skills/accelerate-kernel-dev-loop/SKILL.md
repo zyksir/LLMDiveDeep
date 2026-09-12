@@ -27,7 +27,7 @@ is explicitly confirmed.
 For any kernel or strategy headed to production, run this sequence in order —
 each step gates the next:
 
-1. **Per-kernel bench** (`kimi_k3_layer/kernels/bench_*.py`,
+1. **Per-kernel bench** (`kimi_k3/kernels/benchmarks/bench_*.py`,
    `communication/kernel_benchmarks/bench_*.py`,
    `communication/bench_comm_graph.py`): reproduce the report's number for
    every kernel the change touches, including the communication kernels.
@@ -36,7 +36,7 @@ each step gates the next:
 3. **Beat the baseline.** Most kernels must beat their unchanged open-source
    or native baseline in the same bench; one that does not needs an explicit
    recorded reason to exist.
-4. **Layer bench** (`kimi_k3_layer/bench_b10_kimi_k3_moe_layer.py`): the whole
+4. **Layer bench** (`kimi_k3/bench_b10_kimi_k3_moe_layer.py`): the whole
    MoE layer, matched against the report table (correctness-gated).
 5. **Migrate to TRT-LLM** (`kimi_k3_optim/`) and get the end-to-end serving
    number. Serving must re-establish every invariant the bench provided

@@ -101,7 +101,7 @@ means beating the FLOOR, not the implementation:
 
 All communication kernels and their benches live under `communication/`
 (`kernels/`, `kernel_benchmarks/`); layer code only *selects* them. The
-fused-tail integration points: `kimi_k3_layer/b10_kimi_k3_moe_layer.py`
+fused-tail integration points: `kimi_k3/b10_kimi_k3_moe_layer.py`
 (`DecodeTail.FUSED_FINALIZE_AR`, `stock_forward`) — both call through
 `MoEAllReduce` today and should switch to the winning kernel here when it
 lands.

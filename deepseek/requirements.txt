@@ -1,0 +1,2 @@
+# CPU is sufficient. CUDA builds work too; no SGLang import is required.
+torch>=2.5

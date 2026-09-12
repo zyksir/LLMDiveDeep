@@ -5,7 +5,7 @@ framework module (timing, correctness, registry, table/CSV/figure output).
 
 Imports are lazy (PEP 562): ``kernel_bench`` imports torch, and eagerly
 importing it here broke the advertised no-GPU self-checks
-(``python3 -m common.arch``, ``python3 -m kimi_k3_layer.capabilities``)
+(``python3 -m common.arch``)
 on any host without torch. ``common.arch`` stays importable bare.
 """
 

@@ -1,0 +1,9 @@
+== mini_kimi_k3_kda.trace.json.gz: spans {name: reps} = {'TrtKimiK3Kda': 24, 'SglKimiK3Kda': 24}
+
+### TrtKimiK3Kda (last 12 reps): 12 layers, modal sequence x12 (1 variant(s)), 1 kernels
+  1.     4.83 us  tensorrt_llm::_v1::kernels::kimi_k3::sm100::fwd_prod_v2::attn_res_fwd_online_v2_kernel
+          full: void tensorrt_llm::_v1::kernels::kimi_k3::sm100::fwd_prod_v2::attn_res_fwd_online_v2_kernel<7168, 4, false, true, false, true, true, false>(__nv_bfloat16*, __nv
+
+### SglKimiK3Kda (last 12 reps): 12 layers, modal sequence x12 (1 variant(s)), 1 kernels
+  1.     4.45 us  sglang::attn_res_fused_tma_kernel
+          full: void sglang::attn_res_fused_tma_kernel<sglang::KimiK3AttnResTrait<7168l, 1u, 4u, 200u>, 1u>(sglang::AttnResTMAParams)

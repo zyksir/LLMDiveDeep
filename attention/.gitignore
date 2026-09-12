@@ -1,0 +1,8 @@
+__pycache__/
+.venv/
+# No scattered measurements in the tutorial tree.
+*.csv
+*.log
+*.png
+local_results/
+results/*/

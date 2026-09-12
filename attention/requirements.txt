@@ -1,0 +1,3 @@
+# Only the reference operators need PyTorch. Optional backends are installed
+# separately for the local CUDA/device combination; see attention.md.
+torch>=2.5

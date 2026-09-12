@@ -10,6 +10,10 @@ One module per backend; ``collective.py`` only dispatches:
     b10_copy_engine_backend  our LowContentionComm movers (dma / sm)
     flashinfer_backend       FlashInfer Lamport AR (+ fused AR+norm)
     trt_backend              TRT-LLM custom allreduce (+ fused AR+norm)
+    sglang_backend           sglang's vendored Kimi-K3 fused MNNVL
+                             kernels: push/pull AR (+ fused RMSNorm),
+                             GEMM+AR; MoE-finalize AR and GEMM+AG as
+                             separate entry points (SM100/103 only)
     col_quant_backend        column AG with fused MXFP8 quant
     b10_multimem_backend     custom NVLS multimem collectives
 """
@@ -21,6 +25,7 @@ from . import (  # noqa: F401
     flashinfer_backend,
     nccl_backend,
     nccl_symm_backend,
+    sglang_backend,
     torch_lc_backend,
     torch_symm_backend,
     trt_backend,

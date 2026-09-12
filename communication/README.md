@@ -34,6 +34,7 @@ SINGLE kernel.
 | `torch_low_contention` | torch's low-contention AG / RS | `torch_lc_backend.py` |
 | `flashinfer:1shot` / `:2shot` | FlashInfer Lamport AR; fused AR+residual+RMSNorm for the norm ops | `flashinfer_backend.py` |
 | `trt` | TRT-LLM custom AR, MIN_LATENCY (+ fused RESIDUAL_RMS_NORM) | `trt_backend.py` |
+| `sgl:push_res` / `sgl:pull_res` / `sgl:push_norm` / `sgl:pull_norm` / `sgl:gemm_ar` | sglang's vendored Kimi-K3 fused MNNVL kernels (1shot multicast-push AR, low-SM NVLS 2shot pull AR on the torch_symm staging, fused-RMSNorm variants, single-kernel GEMM+AR); SM100/103 + multicast + bf16 + whole-world group only — probes and registers nothing elsewhere. MoE-finalize AR and up_proj GEMM+AG are separate entry points on the backend (no op grammar fits them) | `sglang_backend.py` (via `kimi_k3/kernels/sgl_adapters/`) |
 | `vllm_int8` / `vllm_fp8` | vLLM/Kraken two-shot per-group quantized AR (explicit lossy API only) | `quantized_backend.py` |
 | `nccl_symm` | NCCL over symmetric-memory staging (NVLS when IMEX is provisioned) | `nccl_symm_backend.py` |
 | `nccl` | plain torch.distributed (unbounded fallback) | `nccl_backend.py` |

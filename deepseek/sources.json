@@ -1,0 +1,45 @@
+{
+  "inspected_on": "2026-09-10",
+  "deepseek_revision": "dba1be0a40aa45a94ad051997016db3960a90277",
+  "sglang_revision": "52c191da52390fa5508de98eddd1e3eca2dbcfb2",
+  "local_sglang_revision": "f8cbf000f4a5bfd86d3fb7c1e2d6c8fb12339d0e",
+  "files": [
+    {
+      "role": "model configuration and layer schedule",
+      "url": "https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash/blob/dba1be0a40aa45a94ad051997016db3960a90277/config.json"
+    },
+    {
+      "role": "minimal inference configuration",
+      "url": "https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash/blob/dba1be0a40aa45a94ad051997016db3960a90277/inference/config.json"
+    },
+    {
+      "role": "CSA2 reference implementation",
+      "url": "https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash/raw/dba1be0a40aa45a94ad051997016db3960a90277/inference/model.py",
+      "sha256": "4e9ae23620edc8028ccc5d5fef552ab7fdc7dcd6f79608754fe9f67644056f65"
+    },
+    {
+      "role": "attention sink and quantization contracts",
+      "url": "https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash/raw/dba1be0a40aa45a94ad051997016db3960a90277/inference/kernel.py",
+      "sha256": "1236c3507019ed176f5dba5e04bcea58867cf654818c6cf138ed4845398c2455"
+    },
+    {
+      "role": "technical report: architecture, training, inference",
+      "url": "https://huggingface.co/deepseek-ai/DeepSeek-V4.1-Flash/resolve/dba1be0a40aa45a94ad051997016db3960a90277/DeepSeek_V41_Tech_Report.pdf",
+      "sha256": "ba68e2e40408125ae6d2f63a9a241b61c73910691c74ec1a2a7023c851eac08d"
+    },
+    {
+      "role": "SGLang V4 model; compression-ratio restriction",
+      "url": "https://raw.githubusercontent.com/sgl-project/sglang/52c191da52390fa5508de98eddd1e3eca2dbcfb2/python/sglang/srt/models/deepseek_v4.py",
+      "sha256": "65b299966c0c24b674c55c562056cc82000779e9b98733ea2b1661b576b9f5e3"
+    },
+    {
+      "role": "SGLang V4 indexer; paged FP8 reference helper",
+      "url": "https://raw.githubusercontent.com/sgl-project/sglang/52c191da52390fa5508de98eddd1e3eca2dbcfb2/python/sglang/srt/layers/attention/dsv4/indexer.py",
+      "sha256": "fb7d974991001833a435df2d6f571bb749908bf801afab53d4e0913195cf54bd"
+    },
+    {
+      "role": "SGLang sparse prefill/decode dispatch and metadata",
+      "url": "https://github.com/sgl-project/sglang/blob/52c191da52390fa5508de98eddd1e3eca2dbcfb2/python/sglang/srt/layers/attention/deepseek_v4_backend.py"
+    }
+  ]
+}

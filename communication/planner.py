@@ -80,7 +80,10 @@ _OP_IMPLS: dict[str, tuple[str, ...]] = {
     # b10_multimem:lamport is NOT a default candidate: its only win
     # was bs=64 by ~2.5%, below the own-kernel margin gate (explicit
     # impl="b10_multimem:lamport" still works)
-    "all_reduce": ("flashinfer:1shot", "trt", "b10_multimem",
+    # sgl:push_res wins small messages, sgl:pull_res large (sglang's own
+    # crossover ~512KB) — both are candidates; the profile decides.
+    "all_reduce": ("flashinfer:1shot", "trt",
+                   "sgl:push_res", "sgl:pull_res", "b10_multimem",
                    "torch_symm:multimem", "nccl_symm",
                    "torch_symm:1shot",
                    "torch_symm:2shot", "flashinfer:2shot",
@@ -88,9 +91,10 @@ _OP_IMPLS: dict[str, tuple[str, ...]] = {
     "quantized_all_reduce": ("vllm_int8", "vllm_fp8"),
     "all_to_all": ("nccl_symm", "b10_copy_engine",
                    "b10_copy_engine:sm", "nccl"),
-    "allreduce_norm": ("flashinfer:1shot", "trt", "b10_multimem",
+    "allreduce_norm": ("flashinfer:1shot", "trt",
+                       "sgl:push_norm", "sgl:pull_norm", "b10_multimem",
                        "flashinfer:2shot", "seq"),
-    "gemm_allreduce": ("seq",),
+    "gemm_allreduce": ("sgl:gemm_ar", "seq"),
     "allreduce_norm_gemm": ("norm_gemm_seq", "seq"),
 }
 
@@ -330,6 +334,9 @@ class Planner:
             cands = [c for c in cands if not c.startswith("col_")]
         if "trt" in cands and not self._trt_state():
             cands.remove("trt")
+        if any(c.partition(":")[0] == "sgl" for c in cands) \
+                and not self._sgl_state():
+            cands = [c for c in cands if c.partition(":")[0] != "sgl"]
         if any(c.startswith("b10_multimem") for c in cands) \
                 and not self._multimem_state():
             cands = [c for c in cands
@@ -535,6 +542,9 @@ class Planner:
         if family == "flashinfer" and self._flashinfer is None and not (
                 op == "allreduce_norm" and self._fi_norm is not None):
             return False
+        if family == "sgl":
+            # unbuilt lazy backend reads as unavailable (shape-only)
+            return bool(self._sgl) and self._sgl.supports(op, x, variant)
         if op == "all_gather":
             if family == "b10_copy_engine":
                 return self._b10.supports(op, x, variant or "dma")
